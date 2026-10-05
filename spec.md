@@ -105,6 +105,8 @@ Every book runs through its track's pipeline of stages, which each series define
 
 &#91;embedded content: Stage pipeline · two tracks, one review loop, one gate\]
 
+In text: image track books go from image generation (Grades 1 to 3 only) to image review and correction, then whole-book content review; content track books go from writing content and illustrations to content review. Both tracks then go to InDesign layout and layout review. A returned layout review loops through corrections back to layout review. An approved one goes to print approval, which also waits for the 7-working-day ISBN process, and then to printing by the Production Unit and external binding.
+
 Both tracks merge at InDesign layout. A returned layout review loops through corrections until approved, and print approval waits for both an approved layout and a recorded ISBN. The ISBN stage and the print gate are the two stages Rev 5 does not have; legal deposit of 2 printed copies, which follows binding, is a third.
 
 ## Views and features
@@ -149,7 +151,7 @@ Each book has a print record that the Production Unit updates: copies planned (d
 
 ### Recording ISBNs
 
-When the agency issues an ISBN, the project manager (coordinator) enters it with the edition on the book page. The app accepts only a valid ISBN-13 (13 digits with a correct check digit) that no other book uses. The ISBN issued task can only be marked Done once the book has an ISBN, so the print approval gate cannot open without one. Changing an ISBN after print approval is first refused with HTTP 409 and the code confirm\_required; the app then shows a confirmation dialog and resends the request with confirmChange set to true. The change is logged, and if printing has not started the print approval is withdrawn so the coordinator re-approves once the new ISBN is in the files.
+When the agency issues an ISBN, the project manager (coordinator) enters it with the edition on the book page. The app accepts only a valid ISBN-13 (13 digits with a correct check digit) that no other book uses. The ISBN issued task can only be marked Done once the book has an ISBN, so the print approval gate cannot open without one. Changing an ISBN after print approval is first refused with HTTP 409 and the code confirm\_required; the app then shows a confirmation dialog and resends the request with confirmChange set to true. The change is logged, and if printing has not started the print approval is withdrawn and the gate task returns to Not started, so the coordinator re-approves once the new ISBN is in the files.
 
 ### Task statuses
 
@@ -377,6 +379,8 @@ SvelteKit on Vercel talks to the database through Drizzle ORM and the libSQL cli
 
 &#91;embedded content: System architecture · browser, server, database\]
 
+In text: the browser (status matrix, swimlane editor, task drawer, my tasks and workload) sends HTTPS requests to the SvelteKit server on Vercel and polls its change feed. The server holds the pages and endpoints, the scheduler, Better Auth and the change feed, and reaches the database through Drizzle ORM and libSQL: a SQLite file in development or Turso in production, both built from the same migrations.
+
 The browser never touches the database; every write passes through the server, which runs the scheduler; open sessions poll it every 10 seconds for changes made by others.
 
 | Layer | Choice | Why |
@@ -435,11 +439,17 @@ src/
     (app)/s/[series]/workload/+page.svelte
     (app)/s/[series]/books/[code]/+page.svelte
     (app)/s/[series]/settings/...
+    (app)/s/[series]/baselines/+page.svelte
+    (app)/s/[series]/activity/+page.svelte
     (app)/series/new/+page.svelte
     (app)/templates/+page.svelte
-    (app)/settings/...
+    (app)/settings/people/+page.svelte
+    (app)/settings/calendar/+page.svelte
     api/...
     login/+page.svelte
+    invite/[token]/+page.svelte
+    reset-password/+page.svelte
+    reset-password/[token]/+page.svelte
 drizzle/          migrations
 ```
 
@@ -754,7 +764,7 @@ Pages load their data through SvelteKit load functions; every write goes through
 | `POST`, `PATCH`, `DELETE /api/series/:id/tracks`, `/stages`, `/books` | Definitions | Updated pipeline; tasks created or removed for affected books | Admin, coordinator |
 | `PUT /api/series/:id/members/:personId` | `{ role, teamLabel, capacity }` | Membership | Admin, coordinator |
 | `POST /api/series/:id/windows`, `PATCH /api/windows/:id` | `{ label, startDate, endDate }` | Window, changed tasks | Admin, coordinator |
-| `PATCH /api/books/:id/publishing` | `{ isbn, edition, version, confirmChange? }` | Updated book; 422 for an invalid or duplicate ISBN-13; 409 `confirm_required` when the book is already approved for print and `confirmChange` is not true | Admin, coordinator |
+| `PATCH /api/books/:id/publishing` | `{ isbn, edition, version, confirmChange? }` | { book, approvalWithdrawn }, where approvalWithdrawn is true when the print approval was removed and the gate task reset to Not started; 422 for an invalid or duplicate ISBN-13; 409 `confirm_required` when the book is already approved for print and `confirmChange` is not true | Admin, coordinator |
 | `POST /api/tasks/:id/schedule` | `{ start, durationDays, windowId, version }` | Changed tasks, projected dates, or a window error | Admin, coordinator |
 | `POST /api/tasks/bulk-schedule` | `{ moves: [{ id, start, durationDays, windowId, version }] }` | Changed tasks, or the failing task ids (rules below) | Admin, coordinator |
 | `POST /api/tasks/:id/assignees` | `{ personIds, leadId, version }` | Updated task | Admin, coordinator |
@@ -764,7 +774,7 @@ Pages load their data through SvelteKit load functions; every write goes through
 | `POST /api/dependencies` | `{ predecessorId, successorId, lagDays }` | Dependency, changed tasks, or a cycle error | Admin, coordinator |
 | `DELETE /api/dependencies/:id` | none | Removed id | Admin, coordinator |
 | `POST /api/tasks/:id/review` | `{ outcome, summary, version }` | Updated task, review cycle | Assignee of that review task, coordinator |
-| `POST /api/books/:id/approve-print` | `{ note }` | Approval, or the list of unfinished tasks blocking it | Admin, coordinator |
+| `POST /api/books/:id/approve-print` | `{ note }` | Approval, with the book's print approval gate task set to Done in the same transaction; or 409 with the list of unfinished tasks blocking it | Admin, coordinator |
 | `PATCH /api/books/:id/print-record` | Any of `copiesPlanned, depositCopies, copiesPrinted, printedOn, sentToBinderOn, returnedFromBinderOn, copiesBound, depositSubmittedOn, binderName, binderContact, notes, version` | Updated print record | Assignee of the book's printing, binding or deposit task, coordinator |
 | `POST /api/tasks/:id/comments` | `{ body }` | Comment | Series members |
 | `POST /api/undo` | `{ batchId }` | Restored tasks, or 409 naming tasks changed since (rules below) | The batch's actor within their last 50; admin for any batch |
