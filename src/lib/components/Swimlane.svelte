@@ -239,9 +239,45 @@
 		);
 	}
 
-	function onPointerUp() {
-		// TODO: persist via PATCH /api/tasks/:id when REST API is built
-		drag = null;
+	async function onPointerUp() {
+		if (!drag) return;
+		const d = drag;
+		drag = null; // clear immediately so $effect re-sync doesn't fire mid-save
+
+		// Find the task's current optimistic state
+		const moved = localTasks.find(t => t.id === d.taskId);
+		if (!moved || (moved.startDate === d.origStart && moved.endDate === d.origEnd)) return;
+
+		try {
+			const res = await fetch(`/api/tasks/${d.taskId}/schedule`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					start:        moved.startDate,
+					durationDays: moved.durationDays,
+					version:      moved.version,
+				}),
+			});
+
+			if (res.ok) {
+				const { changed } = await res.json() as { changed: Task[] };
+				// Merge server response (includes propagated tasks)
+				localTasks = localTasks.map(t => {
+					const sv = changed.find((c: Task) => c.id === t.id);
+					return sv ? { ...t, ...sv } : t;
+				});
+			} else if (res.status === 409) {
+				// Version conflict: revert this task
+				localTasks = localTasks.map(t =>
+					t.id === d.taskId ? { ...t, startDate: d.origStart, endDate: d.origEnd, durationDays: d.durationDays } : t
+				);
+			}
+		} catch {
+			// Network error: revert
+			localTasks = localTasks.map(t =>
+				t.id === d.taskId ? { ...t, startDate: d.origStart, endDate: d.origEnd, durationDays: d.durationDays } : t
+			);
+		}
 	}
 
 	// ── Resize ────────────────────────────────────────────────────────────────
@@ -249,8 +285,30 @@
 	type ResizeState = { taskId: string; edge: 'left' | 'right'; origStart: string; origEnd: string; };
 	let resizing: ResizeState | null = $state(null);
 
-	// Re-sync local tasks from prop whenever not actively dragging/resizing
+	// Re-sync local tasks from prop when idle (e.g., on server-side reload)
 	$effect(() => { if (!drag && !resizing) localTasks = [...tasksProp]; });
+
+	// Poll for other users' changes every 10 seconds
+	let pollCursor = $state('0');
+	$effect(() => {
+		const sid = series.id;
+		const interval = setInterval(async () => {
+			if (drag || resizing) return; // skip while editing
+			try {
+				const res = await fetch(`/api/series/${sid}/changes?since=${pollCursor}`);
+				if (!res.ok) return;
+				const { tasks: changed, cursor } = await res.json() as { tasks: Task[]; cursor: string };
+				if (cursor !== pollCursor) pollCursor = cursor;
+				if (changed.length > 0) {
+					localTasks = localTasks.map(t => {
+						const sv = changed.find((c: Task) => c.id === t.id);
+						return sv ? { ...t, ...sv } : t;
+					});
+				}
+			} catch { /* network error, retry next tick */ }
+		}, 10_000);
+		return () => clearInterval(interval);
+	});
 
 	function onEdgeDown(e: PointerEvent, task: Task, edge: 'left' | 'right') {
 		e.stopPropagation();
@@ -280,9 +338,41 @@
 		});
 	}
 
-	function onEdgeUp() {
-		// TODO: persist when REST API is built
+	async function onEdgeUp() {
+		if (!resizing) return;
+		const r = resizing;
 		resizing = null;
+
+		const moved = localTasks.find(t => t.id === r.taskId);
+		if (!moved || (moved.startDate === r.origStart && moved.endDate === r.origEnd)) return;
+
+		try {
+			const res = await fetch(`/api/tasks/${r.taskId}/schedule`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					start:        moved.startDate,
+					durationDays: moved.durationDays,
+					version:      moved.version,
+				}),
+			});
+
+			if (res.ok) {
+				const { changed } = await res.json() as { changed: Task[] };
+				localTasks = localTasks.map(t => {
+					const sv = changed.find((c: Task) => c.id === t.id);
+					return sv ? { ...t, ...sv } : t;
+				});
+			} else if (res.status === 409) {
+				localTasks = localTasks.map(t =>
+					t.id === r.taskId ? { ...t, startDate: r.origStart, endDate: r.origEnd } : t
+				);
+			}
+		} catch {
+			localTasks = localTasks.map(t =>
+				t.id === r.taskId ? { ...t, startDate: r.origStart, endDate: r.origEnd } : t
+			);
+		}
 	}
 
 	// ── Helpers ───────────────────────────────────────────────────────────────

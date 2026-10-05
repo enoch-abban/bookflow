@@ -24,6 +24,7 @@ export async function loadSeriesContext(seriesId: string) {
 		tasksData.map(t => [t.id, {
 			id: t.id, startDate: t.startDate, endDate: t.endDate,
 			durationDays: t.durationDays, status: t.status, windowId: t.windowId,
+			version: t.version,
 		}])
 	);
 

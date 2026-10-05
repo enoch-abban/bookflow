@@ -8,6 +8,7 @@ export type SchedTask = {
 	durationDays: number;
 	status: string;
 	windowId: string | null;
+	version: number;
 };
 
 export type SchedDep = {
