@@ -1,9 +1,9 @@
 import { drizzle } from 'drizzle-orm/libsql';
 import { createClient } from '@libsql/client';
 import * as schema from './schema';
-import { env } from '$env/dynamic/private';
+import { DATABASE_URL } from '$app/env/private';
 
-const url = env.DATABASE_URL;
+const url = DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL is not set');
 
 const client = createClient({ url });

@@ -3,19 +3,19 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { sveltekitCookies } from 'better-auth/svelte-kit';
 import { emailOTP } from 'better-auth/plugins';
 import { getRequestEvent } from '$app/server';
-import { env } from '$env/dynamic/private';
+import { ORIGIN, BETTER_AUTH_SECRET, RESEND_API_KEY } from '$app/env/private';
 import { db } from '#lib/server/db/index.ts';
 import { Resend } from 'resend';
 
 let resend: Resend | null = null;
 function getResend() {
-	if (!resend) resend = new Resend(env.RESEND_API_KEY);
+	if (!resend) resend = new Resend(RESEND_API_KEY);
 	return resend;
 }
 
 export const auth = betterAuth({
-	baseURL: env.ORIGIN,
-	secret: env.BETTER_AUTH_SECRET,
+	baseURL: ORIGIN,
+	secret: BETTER_AUTH_SECRET,
 	database: drizzleAdapter(db, { provider: 'sqlite' }),
 	emailAndPassword: {
 		enabled: true,
