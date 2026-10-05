@@ -1,0 +1,144 @@
+/* Design tokens ───────────────────────────────────────────────────────────── */
+:root {
+	/* Brand */
+	--primary:                 #635bff;
+	--primary-hover:           #5148f5;
+	--primary-active:          #443bdc;
+	--primary-foreground:      #ffffff;
+	--primary-subtle:          #eeedff;
+	--primary-subtle-foreground: #5148d8;
+
+	--secondary:               #06b6d4;
+	--secondary-hover:         #089db8;
+	--secondary-foreground:    #062f36;
+	--secondary-subtle:        #e7f9fc;
+
+	--tertiary:                #f59e0b;
+	--tertiary-hover:          #d98705;
+	--tertiary-foreground:     #3d2600;
+	--tertiary-subtle:         #fff7e8;
+
+	/* System */
+	--background:              #ffffff;
+	--foreground:              #101828;
+	--muted:                   #f5f6f8;
+	--muted-foreground:        #5d6678;
+	--border:                  #e3e6ec;
+	--weekend:                 #f0f1f4;
+
+	/* Production & Publishing */
+	--production:              #344054;
+	--production-subtle:       #eef0f3;
+	--publish:                 #c026d3;
+	--publish-hover:           #a21caf;
+	--publish-foreground:      #4a044e;
+	--publish-subtle:          #fdf4ff;
+
+	/* Status */
+	--success:                 #12a150;
+	--success-subtle:          #e8f7ee;
+	--danger:                  #e5484d;
+	--danger-subtle:           #fdecec;
+
+	--focus-ring:              var(--primary);
+
+	/* Spacing */
+	--sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px;
+	--sp-5: 20px; --sp-6: 24px; --sp-8: 32px;
+
+	/* Radius */
+	--radius: 8px;
+	--radius-sm: 4px;
+}
+
+/* Reset ────────────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+	margin: 0;
+	font-family: Inter, system-ui, sans-serif;
+	font-size: 14px;
+	line-height: 1.5;
+	color: var(--foreground);
+	background: var(--background);
+}
+h1, h2, h3, h4 { margin: 0; }
+a { color: var(--primary); text-decoration: none; }
+a:hover { text-decoration: underline; }
+button { cursor: pointer; font: inherit; }
+
+/* App shell ─────────────────────────────────────────────────────────────────  */
+.app-nav {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-4);
+	padding: 0 var(--sp-6);
+	height: 48px;
+	border-bottom: 1px solid var(--border);
+	background: var(--background);
+	position: sticky;
+	top: 0;
+	z-index: 10;
+}
+.app-nav .logo {
+	font-size: 16px;
+	font-weight: 700;
+	color: var(--primary);
+	letter-spacing: -0.02em;
+}
+.app-nav .nav-links { display: flex; gap: var(--sp-4); }
+.app-nav .nav-links a {
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--muted-foreground);
+	padding: var(--sp-1) var(--sp-2);
+	border-radius: var(--radius-sm);
+}
+.app-nav .nav-links a:hover,
+.app-nav .nav-links a.active { color: var(--primary); text-decoration: none; }
+
+/* Chips ─────────────────────────────────────────────────────────────────────  */
+.chip {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 2px;
+	padding: 3px 6px;
+	border-radius: 6px;
+	min-height: 52px;
+	cursor: pointer;
+	transition: filter 0.1s;
+}
+.chip:hover { filter: brightness(0.96); }
+
+.chip[data-status="not_started"] { background: var(--muted);           color: var(--muted-foreground); }
+.chip[data-status="in_progress"] { background: var(--primary-subtle);  color: var(--primary-subtle-foreground); }
+.chip[data-status="in_review"]   { background: var(--secondary-subtle);color: var(--secondary-foreground); }
+.chip[data-status="returned"]    { background: var(--tertiary-subtle);  color: var(--tertiary-foreground); }
+.chip[data-status="done"]        { background: var(--success-subtle);   color: var(--success); }
+.chip[data-status="blocked"]     { background: var(--danger-subtle);    color: var(--danger); }
+
+.chip-status { font-size: 10px; font-weight: 500; white-space: nowrap; }
+.chip-date   { font-size: 10px; font-weight: 400; opacity: 0.8; }
+.chip-avatar {
+	width: 18px; height: 18px;
+	border-radius: 50%;
+	background: var(--muted-foreground);
+	color: #fff;
+	font-size: 8px;
+	font-weight: 700;
+	display: flex; align-items: center; justify-content: center;
+	flex-shrink: 0;
+}
+.chip--empty { background: transparent; min-height: auto; cursor: default; color: var(--muted-foreground); }
+
+/* Avatar ────────────────────────────────────────────────────────────────────  */
+.avatar {
+	display: inline-flex; align-items: center; justify-content: center;
+	width: 28px; height: 28px;
+	border-radius: 50%;
+	background: var(--primary-subtle);
+	color: var(--primary-subtle-foreground);
+	font-size: 11px; font-weight: 700;
+}
