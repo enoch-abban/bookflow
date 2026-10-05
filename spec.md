@@ -38,6 +38,16 @@ Roles are held per series, so a designer can be a coordinator on one series and 
 
 Every logged-in user can comment on any task. Permission checks run on the server for every action; the UI hides controls a role cannot use but never relies on that alone.
 
+### Accounts and sign-in
+
+Only invited people can create accounts; there is no open sign-up.
+
+1. **Invite.** Placeholder people such as EdTech 1 can be assigned work before anyone signs up. To bring someone in, the admin, or a coordinator for their own series, enters the person's email and sends an invite. The email carries a single-use link valid for 7 days. Resending voids the old link, and an unused invite can be revoked.
+2. **Accept.** The link opens `/invite/[token]`, where the person confirms their display name and sets a password of at least 10 characters. A 6-digit code is emailed to verify the address. Once it is entered, the account is linked to the existing person record, so every task already assigned to the placeholder carries over.
+3. **Sign in.** Email and password, then a 6-digit emailed code valid for 10 minutes. Sessions end after 7 days without activity.
+4. **Forgotten password.** "Forgot password" on the sign-in page emails a single-use reset link valid for 30 minutes; the page shows the same message whether or not the email exists. Setting a new password signs the account out everywhere else, and the next sign-in still needs the emailed code. An admin can also send a reset link from the people page.
+5. **Leaving.** Deactivating a person ends their sessions and blocks sign-in. Their tasks and history stay, and the coordinator reassigns any open work.
+
 ## Scope
 
 The MVP covers everything the coordinator and team need to run the current production cycle; phase 2 turns it into a reusable tool for future series.
@@ -91,7 +101,7 @@ Every book runs through its track's pipeline of stages, which each series define
 
 **Tracks in eSTEAM L2.** The image track covers Grades 1 to 9: image generation (Grades 1 to 3 only), image review and correction, overall content review, converting to InDesign, post-layout review, correction and iteration, publishing (manuscript submission and payment, agency review, ISBN issue, all running alongside layout), print approval, printing and binding. The content track covers N1, N2, KG1 and KG2: content restructure (or generation, for N1) with illustration and image generation, content and images review, then the same layout, review, ISBN, approval, print and binding stages. Stages a book does not need are simply not created, so Grade 9 has no image generation task. Another series defines its own tracks; a textbook run might use a single track of manuscript, copyedit, layout, proofread, ISBN and metadata, print approval, printing, binding and legal deposit; an ebook run would end with an online release stage instead of printing.
 
-**Stage categories** drive colour on the swimlane: Creation (writing, illustration, image generation), Review, Layout, Publishing (ISBN assignment, copyright and catalogue registration, metadata, legal deposit, online release) and Production; every stage in any series maps to one of these five, so colours work for any pipeline. Print approval is a gate, shown as a diamond rather than a bar.
+**Stage categories** drive colour on the swimlane: Creation (writing, illustration, image generation), Review, Layout, Publishing (ISBN assignment, copyright and catalogue registration, metadata, legal deposit, online release) and Production; every working stage in any series maps to one of these five, so colours work for any pipeline. A sixth category, Gate, covers approval points such as print approval: a gate takes no working days, is drawn as a diamond in --foreground, and completes only through its approval action, never through a status button.
 
 &#91;embedded content: Stage pipeline · two tracks, one review loop, one gate\]
 
@@ -127,7 +137,7 @@ Opens from any view. Fields: title, book, stage, assignees (lead marked), planne
 
 ### Review loop
 
-When an assignee marks a task Submit for review, the reviewer on the next review stage is notified (in-app in MVP). The reviewer chooses Approve, which completes the task and releases its successors, or Return with changes, which sets the task back to In progress, increments its iteration count and records the comments. Iteration count shows on the bar and in the matrix, so books stuck in loops stand out. Detailed feedback stays in Google Drive comments; each task stores a link to that file, and the app only counts reviews done and pending, shown as icon badges on bars, matrix cells and the book page.
+When an assignee marks a task Submit for review, the reviewer on the next review stage is notified (in-app in MVP). The reviewer chooses Approve, which completes the task and releases its successors, or Return with changes, which sets the task to Returned, increments its iteration count and records a short summary. The returned task moves to the top of the assignee's My tasks, and they set it back to In progress when they start the corrections. Iteration count shows on the bar and in the matrix, so books stuck in loops stand out. Detailed feedback stays in Google Drive comments; each task stores a link to that file, and the app only counts reviews done and pending, shown as icon badges on bars, matrix cells and the book page.
 
 ### Print approval gate
 
@@ -135,7 +145,11 @@ Printing cannot start until a coordinator records approval on the book: who appr
 
 ### Print and binding tracker
 
-Each book has a print record that the Production Unit updates: copies planned (default 20), copies printed and the date, date sent to the external binder, date returned, copies bound, and the binder's name and contact. It also records the legal deposit: copies submitted (2 per book for eSTEAM L2, printed and bound on top of the 20 planned, so each print run is 22) and the date, against the deadline of two calendar months after the ISBN was issued. A book counts as finished only when copies bound equals copies planned plus deposit copies and its deposit is recorded.
+Each book has a print record that the Production Unit updates: copies planned (default 20), copies printed and the date, date sent to the external binder, date returned, copies bound, and the binder's name and contact. It also records the legal deposit: copies submitted (2 per book for eSTEAM L2, printed and bound on top of the 20 planned, so each print run is 22) and the date, against the deadline of two calendar months after the ISBN was issued. A book counts as finished only when copies bound equals copies planned plus deposit copies and its deposit is recorded. When a book's print record is created, copies planned and deposit copies are copied from the series' default copies and legal deposit copies; the coordinator can then change them for that book. Changing a series default later affects only books added afterwards, unless the coordinator chooses Apply to all books.
+
+### Recording ISBNs
+
+When the agency issues an ISBN, the project manager (coordinator) enters it with the edition on the book page. The app accepts only a valid ISBN-13 (13 digits with a correct check digit) that no other book uses. The ISBN issued task can only be marked Done once the book has an ISBN, so the print approval gate cannot open without one. Changing an ISBN after print approval asks for confirmation and is logged.
 
 ### Task statuses
 
@@ -148,7 +162,9 @@ Each book has a print record that the Production Unit updates: copies planned (d
 | Done | Complete and approved where needed | Assignee or reviewer |
 | Blocked | Cannot proceed; reason required | Anyone assigned |
 
-Late and At risk are computed flags, not statuses: Late means today is past the planned end and the task is not Done; At risk means a predecessor is late, or the task's projected end passes its hard deadline, such as the legal deposit date.
+Allowed moves: Not started to In progress; In progress to In review; In review to Done or Returned; Returned to In progress. Any status except Done can move to Blocked and back to the status it came from. The server rejects any other change.
+
+Late and At risk are computed flags, not statuses: Late means today is past the planned end and the task is not Done; At risk means a predecessor is late, or the task's projected end passes its hard deadline, such as the legal deposit date, or its book's projected finish passes the series hard limit.
 
 ## Swimlane editor
 
@@ -156,7 +172,7 @@ Every bar on the swimlane can be dragged, resized, reassigned and edited in plac
 
 ### Layout
 
-- **Time axis.** Working days from the series start to two weeks past the target, with weekends drawn as narrow grey columns. Zoom levels: day (default) and week. A vertical line marks today; a dashed line marks the series target date.
+- **Time axis.** Working days from the series start to two weeks past the target, with weekends drawn as narrow grey columns. Zoom levels: day (default) and week. The toolbar above the axis holds the zoom, the lane grouping toggle, the Critical path toggle and, while strict mode is on, a Strict badge. A vertical line marks today; a dashed line marks the series target date.
 - **Windows.** The Rev 5 windows appear as labelled bands across the top and as faint dividers down the grid. When the series enforces them, as eSTEAM L2 does, every task sits inside one window and cannot cross its edges.
 - **Lanes.** Two groupings, switched with a toggle. By person groups lanes by the series' team labels; for eSTEAM L2 that reproduces Rev 5, with one lane per EdTech, reviewer, designer and the Production Unit. By book shows one lane per book with its whole pipeline left to right. Lanes collapse into their role or batch.
 - **Bars.** Fill colour shows stage category; the label shows stage and book ("InDesign · G8"). Status shows as fill style: outline for Not started, solid for In progress, striped for In review, a check icon and reduced opacity for Done, a danger border for Late or Blocked. An iteration badge ("×2") appears after the first return. The print gate is a diamond.
@@ -175,7 +191,7 @@ Every bar on the swimlane can be dragged, resized, reassigned and edited in plac
 | Unlink | Click an arrow, then Delete | Popover, remove predecessor | Dependency removed |
 | Multi-select | Shift-click or drag a marquee | Shift plus Tab | Selected bars move and resize together |
 | Delete | Popover delete button | Delete, then confirm | Task removed; its links are reattached predecessor to successor |
-| Undo and redo | Toolbar buttons | Ctrl or Cmd plus Z; Ctrl or Cmd plus Shift plus Z | Steps back through the last 50 changes in the session |
+| Undo and redo | Toolbar buttons | Ctrl or Cmd plus Z; Ctrl or Cmd plus Shift plus Z | Steps back through your own last 50 changes on this series; redo reapplies them |
 
 Only Admin and Coordinator roles can drag, resize, create and link. Everyone else sees the swimlane read-only, with a click opening the task drawer.
 
@@ -188,7 +204,7 @@ Only Admin and Coordinator roles can drag, resize, create and link. Everyone els
 
 ### Conflicts and concurrency
 
-- Dropping a task before its predecessor ends is allowed but flagged: the arrow turns danger-coloured and the task gets an At risk flag. A strict mode setting can block such drops instead.
+- Dropping a task before its predecessor ends is allowed but flagged: the arrow turns danger-coloured and the task gets an At risk flag. Strict mode, switched on in series settings by an admin or coordinator, blocks such drops instead and shows a Strict badge in the swimlane toolbar.
 - Double-booking a person is allowed; it shows in the workload view. Production is the exception: printing is capped at 2 books per working day.
 - Each task carries a version number. If two people edit the same task, the second save is rejected, the bar snaps to the server state and a toast explains why.
 - Other users' changes arrive by polling every 10 seconds and animate into place.
@@ -220,15 +236,15 @@ if task.start < earliest_start(task):
 
 Tasks marked Done are never moved. Successors that already start late enough are left alone, so slack absorbs slips. The whole recalculation runs in one database transaction and returns the list of changed tasks.
 
-**Windows.** When a series enforces windows, as eSTEAM L2 does, every task belongs to one window and its start and end must fall inside it; otherwise windows are reference bands only. Publishing stages are exempt in every series, because they run on the ISBN agency's clock rather than the team's windows. When propagation pushes a task past its window's last working day, the task moves into the earliest later window that starts after its predecessors finish and has enough working days for its duration. If no window has room, the task is flagged Unscheduled and parked in an overflow lane until the coordinator extends a window or adds one. Only Admin and Coordinator can edit windows.
+**Windows.** When a series enforces windows, as eSTEAM L2 does, every task belongs to one window and its start and end must fall inside it; otherwise windows are reference bands only. Publishing stages are exempt in every series, because they run on the ISBN agency's clock rather than the team's windows. When propagation pushes a task past its window's last working day, the task moves into the earliest later window that starts after its predecessors finish and has enough working days for its duration. If no window has room, the task is marked unscheduled (its schedule\_state changes and its window is cleared, while its dates keep the earliest it could run) and parked in an overflow lane until the coordinator extends a window or adds one. Only Admin and Coordinator can edit windows.
 
-**Production capacity.** Printing capacity, buffer days and default copies are set per series. For eSTEAM L2, the Production Unit prints 2 books per working day at 22 copies each (20 planned plus 2 for legal deposit). Each printing task is one working day, the Production Unit's capacity is set to 2, and the scheduler keeps one extra working day free at the end of every printing window for printer downtime. A batch of three books therefore needs 3 working days and N1 needs 2, which matches the Rev 5 printing windows.
+**Production capacity.** Printing capacity, buffer days and default copies are set per series. For eSTEAM L2, the Production Unit prints 2 books per working day at 22 copies each (20 planned plus 2 for legal deposit). Each printing task is one working day, the Production Unit's capacity is set to 2, and the scheduler reserves a buffer of print\_buffer\_days working days (1 for eSTEAM L2) straight after each batch's last printing day. Automatic placement never puts printing on a buffer day, and that batch's binding cannot start until the buffer has passed. A coordinator can still drag a print task onto a buffer day, and the bar then shows a hatched warning. Where windows are enforced, printing plus the buffer must fit inside the window; books that do not fit at the Production Unit's capacity move to the next window. A batch of three books therefore needs 3 working days and N1 needs 2, which matches the Rev 5 printing windows.
 
 **Publishing.** Publishing stages follow the ISBN agency's process, set per series. For eSTEAM L2 they run as below, in working days unless stated. For eSTEAM L2, submission waits for the team's internal content review, so the agency always receives the final manuscript; a series can instead submit straight after content creation when time is tight.
 
 | Stage | Duration | Starts after | Done by |
 | --- | --- | --- | --- |
-| Manuscript submission and payment | 1 day | Internal content review (overall review, or content and images review) | Coordinator |
+| Manuscript submission and payment | 1 day | Internal content review (overall review, or content and images review) | Project manager (coordinator) |
 | Agency review and approval | 5 days | Submission and payment | ISBN agency (external) |
 | ISBN issued | 1 day | Approval | ISBN agency (external) |
 | Add ISBN to copyright page and cover | Within correction and iteration | ISBN issued | Designer |
@@ -240,7 +256,7 @@ Print approval waits for ISBN issued. Legal deposit carries a hard deadline of t
 
 **Cycle check.** Adding a dependency that would create a loop is rejected with a message naming the loop.
 
-**Projected dates.** Each book's projected finish is its binding task's end. The series projected finish is the latest of those, shown against the series target date and its hard limit (24 November and 15 December for eSTEAM L2). Both dates belong to the series, not the app: the admin sets them when creating a series, the admin or coordinator can change them at any time (each change goes in the activity log), and the hard limit is optional. The chain of tasks with no slack before that date is highlighted on request as the critical path.
+**Projected dates.** Each book's projected finish is its binding task's end. The series projected finish is the latest of those, shown against the series target date and its hard limit (24 November and 15 December for eSTEAM L2). Both dates belong to the series, not the app: the admin sets them when creating a series, the admin or coordinator can change them at any time (each change goes in the activity log), and the hard limit is optional. The chain of tasks with no slack before that date is the critical path. A Critical path toggle in the swimlane toolbar (shortcut C) outlines those bars at 2 px in --primary-active and fades every other bar to 40% opacity; the book page has the same toggle for one book. The toggle is off by default and remembered per user.
 
 **Baselines.** On import, Rev 5 is saved as the baseline. Variance per task is planned end minus baseline end in working days, shown in the drawer and the book page. The coordinator can save new baselines (Rev 6 and so on) at any time.
 
@@ -334,6 +350,21 @@ White text on `--primary` is about 4.7 to 1, which passes WCAG AA for normal tex
 
 A 4 px spacing scale, 8 px corner radius on cards, bars and inputs, 1 px borders in `--border`, and a 2 px focus ring in `--focus-ring` with a 2 px offset. Core components: button (primary, secondary, ghost, danger), status chip, avatar initials, task bar, matrix cell, drawer, popover, toast, segmented toggle, date picker that skips non-working days, and a confirmation dialog.
 
+### Breakpoints
+
+| Width | Layout |
+| --- | --- |
+| Under 640 px (phone) | Single column. Matrix keeps the book column fixed and scrolls sideways. Drawer opens full screen. Swimlane is read-only. |
+| 640 to 1023 px (small tablet) | Drawer opens as a 420 px side panel over the page. Swimlane is read-only below 768 px and editable from 768 px, which covers tablets in landscape. |
+| 1024 to 1439 px (laptop) | Full layout; drawer docks beside the view. |
+| 1440 px and up (wide) | Swimlane shows more days at the same zoom; text sizes do not grow. |
+
+### Loading, empty and error states
+
+- **Loading.** First loads show plain grey placeholder rows and bars in `--muted`; nothing jumps when data arrives. Polling refreshes happen silently.
+- **Empty.** No series: admins see "Create your first series"; others see "You have not been added to a series yet". A series with no books prompts the coordinator to add books or apply a template. My tasks with nothing assigned says so in one line. The overflow lane is hidden when no task is unscheduled.
+- **Errors.** A failed save snaps the bar back and shows a toast with the reason. After three failed polls in a row, a banner reads "Offline: your view may be out of date" and clears itself when polling recovers.
+
 ## Technical architecture
 
 SvelteKit on Vercel talks to the database through Drizzle ORM and the libSQL client, which reads a local SQLite file in development and Turso in production, so the swap is a change of two environment variables rather than a code change.
@@ -408,7 +439,7 @@ drizzle/          migrations
 
 ## Database schema
 
-Twenty tables hold the plan, its history and its people; auth tables are generated by Better Auth and linked to `people` through `user_id`. Dates are ISO text, IDs are ULID text, and every mutable task row carries a `version` for optimistic locking.
+Twenty-one tables hold the plan, its history and its people; auth tables are generated by Better Auth and linked to `people` through `user_id`. Dates are ISO text, IDs are ULID text, and every mutable task row carries a `version` for optimistic locking.
 
 ```sql
 -- Series, templates and pipeline definition --------------------------
@@ -424,19 +455,20 @@ CREATE TABLE templates (
 );
 
 CREATE TABLE series (
-  id                TEXT PRIMARY KEY,
-  name              TEXT NOT NULL,          -- 'eSTEAM L2'
-  template_id       TEXT REFERENCES templates(id),
-  status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('planning','active','closed')),
-  start_date        TEXT NOT NULL,          -- '2026-10-01'
-  target_date       TEXT NOT NULL,          -- '2026-11-24'
-  hard_limit_date   TEXT,                   -- latest acceptable finish; '2026-12-15' for eSTEAM L2
-  book_group_label  TEXT NOT NULL DEFAULT 'Group',   -- 'Grade group' for eSTEAM
-  enforce_windows   INTEGER NOT NULL DEFAULT 0,      -- 1 for eSTEAM L2
-  strict_mode       INTEGER NOT NULL DEFAULT 0,
-  default_copies    INTEGER NOT NULL DEFAULT 20,
-  print_buffer_days INTEGER NOT NULL DEFAULT 1,
-  legal_deposit_copies INTEGER NOT NULL DEFAULT 0 -- 2 for eSTEAM L2
+  id                   TEXT PRIMARY KEY,
+  name                 TEXT NOT NULL,       -- 'eSTEAM L2'
+  template_id          TEXT REFERENCES templates(id),
+  status               TEXT NOT NULL DEFAULT 'active'
+                       CHECK (status IN ('planning','active','closed')),
+  start_date           TEXT NOT NULL,       -- '2026-10-01'
+  target_date          TEXT NOT NULL,       -- '2026-11-24'
+  hard_limit_date      TEXT,                -- optional; '2026-12-15' for eSTEAM L2
+  book_group_label     TEXT NOT NULL DEFAULT 'Group',  -- 'Grade group' for eSTEAM L2
+  enforce_windows      INTEGER NOT NULL DEFAULT 0,     -- 1 for eSTEAM L2
+  strict_mode          INTEGER NOT NULL DEFAULT 0,
+  default_copies       INTEGER NOT NULL DEFAULT 20,
+  legal_deposit_copies INTEGER NOT NULL DEFAULT 0,     -- 2 for eSTEAM L2
+  print_buffer_days    INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE tracks (
@@ -449,17 +481,18 @@ CREATE TABLE tracks (
 );
 
 CREATE TABLE stages (
-  id            TEXT PRIMARY KEY,
-  series_id     TEXT NOT NULL REFERENCES series(id) ON DELETE CASCADE,
-  key           TEXT NOT NULL,              -- 'indesign', 'post_layout_review'
-  name          TEXT NOT NULL,
-  category      TEXT NOT NULL CHECK (category IN ('creation','review','layout','publish','gate','production')),
-  sort_order    INTEGER NOT NULL,           -- also the matrix column order
-  default_days  INTEGER NOT NULL DEFAULT 1,
-  is_review     INTEGER NOT NULL DEFAULT 0,
-  is_external   INTEGER NOT NULL DEFAULT 0, -- done by an outside body, e.g. the ISBN agency
-  ignores_windows INTEGER NOT NULL DEFAULT 0, -- 1 for publishing stages
-  deadline_rule TEXT,                       -- JSON, e.g. {"after":"isbn_issued","months":2}
+  id              TEXT PRIMARY KEY,
+  series_id       TEXT NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+  key             TEXT NOT NULL,            -- 'indesign', 'isbn_issued'
+  name            TEXT NOT NULL,
+  category        TEXT NOT NULL
+                  CHECK (category IN ('creation','review','layout','publish','gate','production')),
+  sort_order      INTEGER NOT NULL,         -- also the matrix column order
+  default_days    INTEGER NOT NULL DEFAULT 1,  -- 0 for gates
+  is_review       INTEGER NOT NULL DEFAULT 0,
+  is_external     INTEGER NOT NULL DEFAULT 0,  -- done by an outside body, e.g. the ISBN agency
+  ignores_windows INTEGER NOT NULL DEFAULT 0,  -- 1 for publishing stages
+  deadline_rule   TEXT,                     -- JSON, e.g. {"after":"isbn_issued","months":2}
   UNIQUE (series_id, key)
 );
 
@@ -476,19 +509,22 @@ CREATE TABLE books (
   code          TEXT NOT NULL,              -- 'G9', 'KG1', 'N1'
   name          TEXT NOT NULL,
   group_label   TEXT,                       -- 'JHS', 'Preschool'; free text per series
-  isbn          TEXT UNIQUE,                -- recorded at the publishing stage
+  isbn          TEXT UNIQUE,                -- ISBN-13, entered when the agency issues it
   edition       TEXT,                       -- '1st edition, 2026'
   batch         INTEGER,
   sort_order    INTEGER NOT NULL,
+  version       INTEGER NOT NULL DEFAULT 1,
   UNIQUE (series_id, code)
 );
 
--- People and membership -----------------------------------------------
+-- People, membership and invites -------------------------------------
+-- Better Auth adds its own user, session, account and verification tables;
+-- password reset tokens and one-time codes live there.
 
 CREATE TABLE people (
   id            TEXT PRIMARY KEY,
-  user_id       TEXT UNIQUE,                -- null until they sign up
-  display_name  TEXT NOT NULL,              -- 'EdTech 1' until the admin renames it
+  user_id       TEXT UNIQUE,                -- null until the invite is accepted
+  display_name  TEXT NOT NULL,              -- 'EdTech 1' until renamed
   email         TEXT UNIQUE,
   is_admin      INTEGER NOT NULL DEFAULT 0,
   active        INTEGER NOT NULL DEFAULT 1
@@ -501,6 +537,18 @@ CREATE TABLE series_members (
   team_label    TEXT,                       -- 'EdTech', 'Reviewer', 'Production Unit'
   capacity      REAL NOT NULL DEFAULT 1,    -- task days per working day; 2 for eSTEAM's Production Unit
   PRIMARY KEY (series_id, person_id)
+);
+
+CREATE TABLE invites (
+  id            TEXT PRIMARY KEY,
+  person_id     TEXT NOT NULL REFERENCES people(id),
+  email         TEXT NOT NULL,
+  token_hash    TEXT NOT NULL UNIQUE,       -- only the hash is stored
+  invited_by    TEXT NOT NULL REFERENCES people(id),
+  created_at    TEXT NOT NULL,
+  expires_at    TEXT NOT NULL,              -- created_at + 7 days
+  accepted_at   TEXT,
+  revoked_at    TEXT
 );
 
 -- Calendar --------------------------------------------------------------
@@ -523,26 +571,32 @@ CREATE TABLE holidays (
 -- Work ------------------------------------------------------------------
 
 CREATE TABLE tasks (
-  id            TEXT PRIMARY KEY,
-  book_id       TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
-  stage_id      TEXT NOT NULL REFERENCES stages(id),
-  window_id     TEXT REFERENCES windows(id), -- null: no window, or Unscheduled when enforced
-  title         TEXT NOT NULL,
-  start_date    TEXT NOT NULL,
-  end_date      TEXT NOT NULL,
-  duration_days INTEGER NOT NULL CHECK (duration_days >= 1),
-  status        TEXT NOT NULL DEFAULT 'not_started'
-                CHECK (status IN ('not_started','in_progress','in_review','returned','done','blocked')),
+  id             TEXT PRIMARY KEY,
+  book_id        TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  stage_id       TEXT NOT NULL REFERENCES stages(id),
+  -- window_id is null when the task sits outside windows: the series does not
+  -- enforce them, the stage ignores them (publishing), or the task is unscheduled
+  window_id      TEXT REFERENCES windows(id),
+  schedule_state TEXT NOT NULL DEFAULT 'scheduled'
+                 CHECK (schedule_state IN ('scheduled','unscheduled')),
+  title          TEXT NOT NULL,
+  start_date     TEXT NOT NULL,             -- earliest possible dates while unscheduled
+  end_date       TEXT NOT NULL,
+  duration_days  INTEGER NOT NULL CHECK (duration_days >= 0),  -- 0 only for gates (server-checked)
+  status         TEXT NOT NULL DEFAULT 'not_started'
+                 CHECK (status IN ('not_started','in_progress','in_review','returned','done','blocked')),
+  status_before_block TEXT,                 -- restored when a Blocked task is unblocked
   blocked_reason TEXT,
-  iteration     INTEGER NOT NULL DEFAULT 1,
-  feedback_url  TEXT,
-  due_date      TEXT,                       -- hard deadline from the stage's deadline rule                       -- Google Drive file holding review comments
-  notes         TEXT,
-  version       INTEGER NOT NULL DEFAULT 1,
-  completed_at  TEXT,
-  created_at    TEXT NOT NULL,
-  updated_at    TEXT NOT NULL,
-  UNIQUE (book_id, stage_id)
+  iteration      INTEGER NOT NULL DEFAULT 1,
+  feedback_url   TEXT,                      -- Google Drive file holding review comments
+  due_date       TEXT,                      -- hard deadline from the stage's deadline rule
+  notes          TEXT,
+  version        INTEGER NOT NULL DEFAULT 1,
+  completed_at   TEXT,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL,
+  UNIQUE (book_id, stage_id),
+  CHECK (schedule_state = 'scheduled' OR window_id IS NULL)
 );
 
 CREATE TABLE task_assignees (
@@ -579,13 +633,15 @@ CREATE TABLE print_approvals (
 
 CREATE TABLE print_records (
   book_id                 TEXT PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
-  copies_planned          INTEGER NOT NULL,  -- defaults from series.default_copies (20); print run = copies_planned + deposit_copies (22)
+  -- copies_planned and deposit_copies are copied from series.default_copies and
+  -- series.legal_deposit_copies when the record is created; print run = their sum
+  copies_planned          INTEGER NOT NULL,
+  deposit_copies          INTEGER NOT NULL,
   copies_printed          INTEGER NOT NULL DEFAULT 0,
   printed_on              TEXT,
   sent_to_binder_on       TEXT,
   returned_from_binder_on TEXT,
   copies_bound            INTEGER NOT NULL DEFAULT 0,
-  deposit_copies          INTEGER NOT NULL DEFAULT 0,
   deposit_submitted_on    TEXT,
   binder_name             TEXT,
   binder_contact          TEXT,
@@ -621,14 +677,18 @@ CREATE TABLE baseline_tasks (
 
 CREATE TABLE activity_log (
   id            TEXT PRIMARY KEY,           -- ULID, so it doubles as the polling cursor
-  series_id     TEXT REFERENCES series(id), -- scopes the change feed
+  series_id     TEXT REFERENCES series(id), -- scopes the change feed; null for global changes
   actor_id      TEXT REFERENCES people(id),
-  entity        TEXT NOT NULL,              -- 'task', 'dependency', 'approval', 'print_record', 'window', 'stage'
+  entity        TEXT NOT NULL CHECK (entity IN (
+                  'series','template','track','stage','book','task','dependency',
+                  'window','holiday','member','person','invite','review',
+                  'approval','print_record','comment','baseline')),
   entity_id     TEXT NOT NULL,
-  action        TEXT NOT NULL,              -- 'move', 'resize', 'reassign', 'status'
+  action        TEXT NOT NULL,              -- 'create', 'update', 'delete', 'move', 'resize',
+                                            -- 'reassign', 'status', 'undo'
   before_json   TEXT,
   after_json    TEXT,
-  batch_id      TEXT,                       -- groups a drop and its propagated moves
+  batch_id      TEXT,                       -- groups an action and its propagated moves
   created_at    TEXT NOT NULL
 );
 
@@ -638,8 +698,10 @@ CREATE INDEX idx_tasks_window  ON tasks(window_id);
 CREATE INDEX idx_tasks_dates   ON tasks(start_date, end_date);
 CREATE INDEX idx_assignee_p    ON task_assignees(person_id);
 CREATE INDEX idx_dep_succ      ON dependencies(successor_id);
+CREATE INDEX idx_invites_p     ON invites(person_id);
 CREATE INDEX idx_log_feed      ON activity_log(series_id, id);
 CREATE INDEX idx_log_entity    ON activity_log(entity, entity_id);
+CREATE INDEX idx_log_batch     ON activity_log(actor_id, series_id, batch_id);
 ```
 
 The `batch_id` on the activity log lets one undo reverse a drop together with every task it pushed.
@@ -657,41 +719,57 @@ Pages load their data through SvelteKit load functions; every write goes through
 | `/s/[series]` | Status matrix | Series members |
 | `/s/[series]/swimlane` | Swimlane editor (editable for admin and coordinator) | Series members |
 | `/s/[series]/workload` | Workload heatmap | Series members |
-| `/s/[series]/books/[code]` | Book detail | Series members |
-| `/s/[series]/settings` | Tracks, stages, book groups, team labels, windows, members, print settings | Admin, coordinator |
+| `/s/[series]/books/[code]` | Book detail, including ISBN entry | Series members; ISBN entry for admin and coordinator |
+| `/s/[series]/settings` | Tracks, stages, book groups, team labels, windows, members and invites, print and publishing settings, target date and hard limit, enforce windows and strict mode switches | Admin, coordinator |
 | `/s/[series]/baselines` | Saved baselines and variance | Admin, coordinator |
+| `/s/[series]/activity` | Activity log, with undo for admins | Admin, coordinator |
 | `/series/new` | Create a series from a template or blank (simple form in MVP, wizard in phase 2) | Admin |
 | `/templates` | Saved templates | Admin |
-| `/settings/people`, `/settings/calendar` | People and holidays, shared by all series | Admin |
-| `/login` | Sign-in | Public |
+| `/settings/people`, `/settings/calendar` | People, invites, password reset links, holidays | Admin |
+| `/login` | Sign-in with password and emailed code | Public |
+| `/invite/[token]` | Accept an invite: set name and password, verify email | Public, valid token |
+| `/reset-password`, `/reset-password/[token]` | Request a reset link; set a new password | Public, valid token for the second |
 
 ### Write endpoints
 
 | Method and path | Body | Returns | Roles |
 | --- | --- | --- | --- |
-| `POST /api/series` | `{ name, startDate, targetDate, templateId? }` | New series with tracks, stages, team labels and settings copied from the template | Admin |
-| `PATCH /api/series/:id` | Any of `name, targetDate, hardLimitDate, status, bookGroupLabel, enforceWindows, strictMode, defaultCopies, printBufferDays` | Updated series | Admin, coordinator |
+| Better Auth routes under `/api/auth/*` | Sign-in, emailed code, sign-out, password reset request and reset | Session or reset result | Public |
+| `POST /api/people` | `{ displayName, email? }` | New placeholder person | Admin; coordinator, who also adds them to their series |
+| `POST /api/people/:id/invite` | `{ email }` | Invite sent; any earlier open invite for that person is voided | Admin; coordinator for their series' members |
+| `DELETE /api/invites/:id` | none | Invite revoked | Admin, the inviter |
+| `POST /api/invites/accept` | `{ token, displayName, password }` | Account created and linked to the person; verification code sent | Public, valid token |
+| `POST /api/people/:id/password-reset` | none | Reset link emailed to that person | Admin |
+| `PATCH /api/people/:id` | Any of `displayName, active` | Updated person; deactivation ends their sessions | Admin |
+| `POST /api/series` | `{ name, startDate, targetDate, hardLimitDate?, templateId? }` | New series with tracks, stages, team labels and settings copied from the template | Admin |
+| `PATCH /api/series/:id` | Any of `name, targetDate, hardLimitDate, status, bookGroupLabel, enforceWindows, strictMode, defaultCopies, legalDepositCopies, printBufferDays` | Updated series | Admin, coordinator |
 | `POST /api/series/:id/template` | `{ name, description }` | Template saved from this series' pipeline | Admin, coordinator |
 | `POST`, `PATCH`, `DELETE /api/series/:id/tracks`, `/stages`, `/books` | Definitions | Updated pipeline; tasks created or removed for affected books | Admin, coordinator |
 | `PUT /api/series/:id/members/:personId` | `{ role, teamLabel, capacity }` | Membership | Admin, coordinator |
 | `POST /api/series/:id/windows`, `PATCH /api/windows/:id` | `{ label, startDate, endDate }` | Window, changed tasks | Admin, coordinator |
+| `PATCH /api/books/:id/publishing` | `{ isbn, edition, version }` | Updated book, or 422 for an invalid or duplicate ISBN-13 | Admin, coordinator |
 | `POST /api/tasks/:id/schedule` | `{ start, durationDays, windowId, version }` | Changed tasks, projected dates, or a window error | Admin, coordinator |
+| `POST /api/tasks/bulk-schedule` | `{ moves: [{ id, start, durationDays, windowId, version }] }` | Changed tasks, or the failing task ids (rules below) | Admin, coordinator |
 | `POST /api/tasks/:id/assignees` | `{ personIds, leadId, version }` | Updated task | Admin, coordinator |
-| `PATCH /api/tasks/:id` | Any of `title, notes, status, blockedReason, feedbackUrl, version` | Updated task | Coordinator; assignees for status, notes and feedback link |
+| `PATCH /api/tasks/:id` | Any of `title, notes, status, blockedReason, feedbackUrl, version` | Updated task, or 422 for a status move the rules do not allow | Coordinator; assignees for status, notes and feedback link |
 | `POST /api/tasks` | `{ bookId, stageId, windowId, start, durationDays, personIds }` | New task, changed tasks | Admin, coordinator |
 | `DELETE /api/tasks/:id` | `{ version }` | Removed id, relinked dependencies | Admin, coordinator |
-| `POST /api/tasks/bulk-schedule` | `{ moves: [{ id, start, durationDays, windowId, version }] }` | Changed tasks | Admin, coordinator |
 | `POST /api/dependencies` | `{ predecessorId, successorId, lagDays }` | Dependency, changed tasks, or a cycle error | Admin, coordinator |
 | `DELETE /api/dependencies/:id` | none | Removed id | Admin, coordinator |
 | `POST /api/tasks/:id/review` | `{ outcome, summary, version }` | Updated task, review cycle | Assignee of that review task, coordinator |
 | `POST /api/books/:id/approve-print` | `{ note }` | Approval, or the list of unfinished tasks blocking it | Admin, coordinator |
-| `PATCH /api/books/:id/print-record` | Any of `copiesPlanned, copiesPrinted, printedOn, sentToBinderOn, returnedFromBinderOn, copiesBound, binderName, binderContact, notes, version` | Updated print record | Assignee of the book's printing or binding task, coordinator |
+| `PATCH /api/books/:id/print-record` | Any of `copiesPlanned, depositCopies, copiesPrinted, printedOn, sentToBinderOn, returnedFromBinderOn, copiesBound, depositSubmittedOn, binderName, binderContact, notes, version` | Updated print record | Assignee of the book's printing, binding or deposit task, coordinator |
 | `POST /api/tasks/:id/comments` | `{ body }` | Comment | Series members |
-| `POST /api/undo` | `{ batchId }` | Restored tasks | Actor of that batch, admin |
+| `POST /api/undo` | `{ batchId }` | Restored tasks, or 409 naming tasks changed since (rules below) | The batch's actor within their last 50; admin for any batch |
+| `POST /api/redo` | `{ batchId }` | Reapplied changes as a new batch | Whoever undid that batch |
 | `POST /api/series/:id/baselines` | `{ name }` | Baseline | Admin, coordinator |
 | `GET /api/series/:id/changes?since=<cursor>` | none | Everything changed in that series since the cursor, plus the new cursor | Series members |
 
 A stale `version` returns HTTP 409 with the current task so the client can snap back. A permission failure returns 403. Validation uses Zod schemas shared between client and server.
+
+**Bulk schedule.** Used when several selected bars move together. The server checks every move before saving any: each must land inside its target window, unless its stage ignores windows, and every version must be current. If any check fails, nothing is saved and the response names the failing tasks (409 for stale versions, 422 for window violations); moves are never clamped to fit. A valid request applies all the moves, runs one propagation pass from the moved tasks, and saves everything in one transaction under one batch id.
+
+**Undo and redo.** Every action, together with the moves it propagated, shares one batch id. The undo button walks back through the current user's last 50 batches on the current series, and redo reapplies them; the endpoint enforces the same limit, so a user can only undo their own recent batches. An admin can undo any batch from the activity log page. In every case the server first checks that none of the batch's tasks has changed since; if one has, the undo is refused with those tasks named, rather than overwriting someone's later edit.
 
 ## Seed data from Rev 5
 
@@ -744,7 +822,7 @@ People keep these placeholder names until the admin renames them and sends sign-
 | Performance | Matrix and swimlane load in under 1.5 seconds on a school broadband connection with about 110 tasks; a drop and its propagation return in under 800 ms from Vercel to Turso; dragging stays smooth (60 frames per second) up to 300 bars |
 | Concurrency | Optimistic locking on every task and print record write; other open sessions see changes within 10 seconds through polling |
 | Data safety | Every change recorded in the activity log with before and after values; Turso's backup and restore in production (confirm what the chosen plan includes); seed script can rebuild a clean database from Rev 5 |
-| Security | HTTPS only; httpOnly, secure session cookies; emailed one-time codes expire after 10 minutes; role checks on every endpoint; rate limiting on sign-in and code requests; no learner data stored |
+| Security | HTTPS only; httpOnly, secure session cookies; emailed one-time codes expire after 10 minutes; role checks on every endpoint; rate limits of 5 failed sign-ins per email per 15 minutes (then a 15-minute lockout), 3 code or reset emails per email per hour, 5 attempts per one-time code, and 120 writes per user per minute; no learner data stored |
 | Accessibility | WCAG 2.1 AA; every drag action has a keyboard and popover equivalent; status never shown by colour alone; visible focus ring |
 | Devices | Latest Chrome, Edge, Firefox and Safari; full editing on desktop and tablet in landscape; matrix, my tasks and the drawer usable on phones; swimlane read-only on phones |
 | Time zone | Africa/Accra; dates have no time component |
@@ -768,18 +846,18 @@ Durations assume one developer working full time with AI-assisted coding, and in
 - N1 sits in the Preschool grade group with N2 to KG2.
 - One developer builds the MVP using AI-assisted coding; the software unit maintains it on Vercel after launch.
 - Each person's capacity is one task at a time unless the admin changes it.
-- The external binder does not log in; Production records binding progress. The app is general-purpose and nothing eSTEAM-specific is hard-coded; eSTEAM L2 is simply its first series. Rev 5 has no publishing slot, so each eSTEAM L2 book gets the publishing stages above, with submission and payment owned by the coordinator until someone is named. Assumed: submission and payment take one working day; the agency works Monday to Friday; the 2 deposit copies are printed and bound in addition to the 20 per book without changing the Production Unit's capacity of 2 books per working day; and the hard limit for eSTEAM L2 is 15 December 2026.
+- The external binder does not log in; Production records binding progress. The app is general-purpose and nothing eSTEAM-specific is hard-coded; eSTEAM L2 is simply its first series. Rev 5 has no publishing slot, so each eSTEAM L2 book gets the publishing stages above, with submission, payment and registration handled by the project manager (coordinator); none of the books has an ISBN yet. Assumed: submission and payment take one working day; the agency works Monday to Friday; the 2 deposit copies are printed and bound in addition to the 20 per book without changing the Production Unit's capacity of 2 books per working day; and the hard limit for eSTEAM L2 is 15 December 2026.
 
 ### Open questions
 
-- [ ] Who are the real people behind EdTech 1 to 3, Rev 1 to 4 and Designer 1 to 3, and who is the coordinator with edit rights? Answer: The real names do not matter now. But they can be set by the admin/project manager later
-- [ ] What is the Production Unit's capacity (books per day and copies per book)? Rev 5 marks it "??". Answer: 2 books per day and 20 copies per book. But add an extra day for printer downtime or any unforeseen mishaps.
-- [ ] Is the target to use the app for this production run, or to have it ready for the next series? Answer: The current production run
-- [ ] Are the proposed neutral and status colours (danger, success, production) acceptable, or is there a brand palette for them? Answer: Yes, acceptable!
-- [ ] Should sign-in use Google Workspace accounts, email and password, or both? Answer: Email and Password, with OTP verification
-- [ ] Should time windows from Rev 5 be enforced (tasks cannot cross them) or stay as visual reference only? Answer: The time window should be enforced.
-- [ ] Where will it be hosted, and who maintains it after launch? Answer: Hosted on Vercel, maintained by software unit.
-- [ ] Do reviewers want to leave page-level feedback in the app, or keep using comments in Google Drive and link to them? Answer: Use comments in GD and link them. However, app may record the number of reviews made/pending as icon badges (just a thought)
-- [ ] Should print quantities and binding vendor details be tracked in the MVP or left for phase 2? Answer: Print quantities, etc should be tracked
+- [x] Who are the real people behind EdTech 1 to 3, Rev 1 to 4 and Designer 1 to 3, and who is the coordinator with edit rights? Answer: The real names do not matter now. But they can be set by the admin/project manager later
+- [x] What is the Production Unit's capacity (books per day and copies per book)? Rev 5 marks it "??". Answer: 2 books per day and 20 copies per book. But add an extra day for printer downtime or any unforeseen mishaps.
+- [x] Is the target to use the app for this production run, or to have it ready for the next series? Answer: The current production run
+- [x] Are the proposed neutral and status colours (danger, success, production) acceptable, or is there a brand palette for them? Answer: Yes, acceptable!
+- [x] Should sign-in use Google Workspace accounts, email and password, or both? Answer: Email and Password, with OTP verification
+- [x] Should time windows from Rev 5 be enforced (tasks cannot cross them) or stay as visual reference only? Answer: The time window should be enforced.
+- [x] Where will it be hosted, and who maintains it after launch? Answer: Hosted on Vercel, maintained by software unit.
+- [x] Do reviewers want to leave page-level feedback in the app, or keep using comments in Google Drive and link to them? Answer: Use comments in GD and link them. However, app may record the number of reviews made/pending as icon badges (just a thought)
+- [x] Should print quantities and binding vendor details be tracked in the MVP or left for phase 2? Answer: Print quantities, etc should be tracked
 
-* [ ] Do the eSTEAM L2 books already have ISBNs, and who handles registration with the national ISBN agency?
+* [x] Do the eSTEAM L2 books already have ISBNs, and who handles registration with the national ISBN agency? Answer: Nope. Project manager should handle the registration
