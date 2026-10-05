@@ -121,7 +121,7 @@ The auto-generated Gantt view of the Rev 5 diagram, fully editable by drag and i
 
 ### My tasks
 
-The signed-in person's tasks in three groups: due now, up next (predecessor finishing within two working days), and later. Each row has one-tap status buttons: Start, Submit for review, Done. Reviewers see a fourth group, Waiting for my review.
+The signed-in person's tasks in three groups: due now, up next (predecessor finishing within two working days), and later. Each row has one-tap status buttons that follow the allowed moves: Start (Not started to In progress), Resume corrections (Returned to In progress), Submit for review, and Done for stages with no review step. Only the buttons valid for the task's current status are shown. Reviewers see a fourth group, Waiting for my review.
 
 ### Workload
 
@@ -145,11 +145,11 @@ Printing cannot start until a coordinator records approval on the book: who appr
 
 ### Print and binding tracker
 
-Each book has a print record that the Production Unit updates: copies planned (default 20), copies printed and the date, date sent to the external binder, date returned, copies bound, and the binder's name and contact. It also records the legal deposit: copies submitted (2 per book for eSTEAM L2, printed and bound on top of the 20 planned, so each print run is 22) and the date, against the deadline of two calendar months after the ISBN was issued. A book counts as finished only when copies bound equals copies planned plus deposit copies and its deposit is recorded. When a book's print record is created, copies planned and deposit copies are copied from the series' default copies and legal deposit copies; the coordinator can then change them for that book. Changing a series default later affects only books added afterwards, unless the coordinator chooses Apply to all books.
+Each book has a print record that the Production Unit updates: copies planned (default 20), copies printed and the date, date sent to the external binder, date returned, copies bound, and the binder's name and contact. It also records the legal deposit: copies submitted (2 per book for eSTEAM L2, printed and bound on top of the 20 planned, so each print run is 22) and the date, against the deadline of two calendar months after the ISBN was issued. A book counts as finished only when copies bound equals copies planned plus deposit copies and its deposit is recorded. When a book's print record is created, copies planned and deposit copies are copied from the series' default copies and legal deposit copies; the coordinator can then change them for that book. Changing a series default later affects only books added afterwards, unless the coordinator chooses Apply to all books, which updates every book whose printing has not started and lists any it skipped.
 
 ### Recording ISBNs
 
-When the agency issues an ISBN, the project manager (coordinator) enters it with the edition on the book page. The app accepts only a valid ISBN-13 (13 digits with a correct check digit) that no other book uses. The ISBN issued task can only be marked Done once the book has an ISBN, so the print approval gate cannot open without one. Changing an ISBN after print approval asks for confirmation and is logged.
+When the agency issues an ISBN, the project manager (coordinator) enters it with the edition on the book page. The app accepts only a valid ISBN-13 (13 digits with a correct check digit) that no other book uses. The ISBN issued task can only be marked Done once the book has an ISBN, so the print approval gate cannot open without one. Changing an ISBN after print approval is first refused with HTTP 409 and the code confirm\_required; the app then shows a confirmation dialog and resends the request with confirmChange set to true. The change is logged, and if printing has not started the print approval is withdrawn so the coordinator re-approves once the new ISBN is in the files.
 
 ### Task statuses
 
@@ -162,7 +162,7 @@ When the agency issues an ISBN, the project manager (coordinator) enters it with
 | Done | Complete and approved where needed | Assignee or reviewer |
 | Blocked | Cannot proceed; reason required | Anyone assigned |
 
-Allowed moves: Not started to In progress; In progress to In review; In review to Done or Returned; Returned to In progress. Any status except Done can move to Blocked and back to the status it came from. The server rejects any other change.
+Allowed moves: Not started to In progress; In progress to In review, or straight to Done when the stage has no review step; In review to Done or Returned; Returned to In progress. Any status except Done can move to Blocked and back to the status it came from. The server rejects any other change.
 
 Late and At risk are computed flags, not statuses: Late means today is past the planned end and the task is not Done; At risk means a predecessor is late, or the task's projected end passes its hard deadline, such as the legal deposit date, or its book's projected finish passes the series hard limit.
 
@@ -175,7 +175,7 @@ Every bar on the swimlane can be dragged, resized, reassigned and edited in plac
 - **Time axis.** Working days from the series start to two weeks past the target, with weekends drawn as narrow grey columns. Zoom levels: day (default) and week. The toolbar above the axis holds the zoom, the lane grouping toggle, the Critical path toggle and, while strict mode is on, a Strict badge. A vertical line marks today; a dashed line marks the series target date.
 - **Windows.** The Rev 5 windows appear as labelled bands across the top and as faint dividers down the grid. When the series enforces them, as eSTEAM L2 does, every task sits inside one window and cannot cross its edges.
 - **Lanes.** Two groupings, switched with a toggle. By person groups lanes by the series' team labels; for eSTEAM L2 that reproduces Rev 5, with one lane per EdTech, reviewer, designer and the Production Unit. By book shows one lane per book with its whole pipeline left to right. Lanes collapse into their role or batch.
-- **Bars.** Fill colour shows stage category; the label shows stage and book ("InDesign · G8"). Status shows as fill style: outline for Not started, solid for In progress, striped for In review, a check icon and reduced opacity for Done, a danger border for Late or Blocked. An iteration badge ("×2") appears after the first return. The print gate is a diamond.
+- **Bars.** Fill colour shows stage category; the label shows stage and book ("InDesign · G8"). Status shows as fill style: outline for Not started, solid for In progress, striped for In review, a dashed border with a return-arrow icon for Returned, a check icon and reduced opacity for Done, a danger border for Late or Blocked. An iteration badge ("×2") appears after the first return. The print gate is a diamond.
 - **Dependencies.** Thin arrows from a bar's end to its successor's start. An arrow turns danger-coloured when a successor starts before its predecessor ends.
 
 ### Interactions
@@ -226,15 +226,21 @@ The scheduler pushes successors forward when a task moves later, never pulls the
 **Propagation.** When a task's dates change, the server walks its successors in topological order and applies:
 
 ```
-earliest_start(task) = max over predecessors p of
-    next_working_day(p.end + p.lag)
+def earliest_start(task):
+    return max(
+        add_working_days(p.end, p.lag) if p.duration == 0              # gate: same day
+        else next_working_day(add_working_days(p.end, p.lag))          # task: next day
+        for p in predecessors(task))
 
 if task.start < earliest_start(task):
     task.start = earliest_start(task)
-    task.end   = add_working_days(task.start, task.duration - 1)
+    task.end   = task.start if task.duration == 0                      # gate: one date
+                 else add_working_days(task.start, task.duration - 1)
 ```
 
 Tasks marked Done are never moved. Successors that already start late enough are left alone, so slack absorbs slips. The whole recalculation runs in one database transaction and returns the list of changed tasks.
+
+**Gates.** A gate has no duration, so its start and end are the same working day: the day after its last predecessor ends. Its successors may start on that same day, because a gate marks a decision rather than work; for print approval, printing can begin the day approval is given. Gates take no capacity, never sit in a window and are never placed on a buffer day. `add_working_days(d, 0)` returns `d`.
 
 **Windows.** When a series enforces windows, as eSTEAM L2 does, every task belongs to one window and its start and end must fall inside it; otherwise windows are reference bands only. Publishing stages are exempt in every series, because they run on the ISBN agency's clock rather than the team's windows. When propagation pushes a task past its window's last working day, the task moves into the earliest later window that starts after its predecessors finish and has enough working days for its duration. If no window has room, the task is marked unscheduled (its schedule\_state changes and its window is cleared, while its dates keep the earliest it could run) and parked in an overflow lane until the coordinator extends a window or adds one. Only Admin and Coordinator can edit windows.
 
@@ -722,7 +728,7 @@ Pages load their data through SvelteKit load functions; every write goes through
 | `/s/[series]/books/[code]` | Book detail, including ISBN entry | Series members; ISBN entry for admin and coordinator |
 | `/s/[series]/settings` | Tracks, stages, book groups, team labels, windows, members and invites, print and publishing settings, target date and hard limit, enforce windows and strict mode switches | Admin, coordinator |
 | `/s/[series]/baselines` | Saved baselines and variance | Admin, coordinator |
-| `/s/[series]/activity` | Activity log, with undo for admins | Admin, coordinator |
+| `/s/[series]/activity` | Activity log; each user can undo their own last 50 changes here, and admins any change | Admin, coordinator |
 | `/series/new` | Create a series from a template or blank (simple form in MVP, wizard in phase 2) | Admin |
 | `/templates` | Saved templates | Admin |
 | `/settings/people`, `/settings/calendar` | People, invites, password reset links, holidays | Admin |
@@ -742,12 +748,13 @@ Pages load their data through SvelteKit load functions; every write goes through
 | `POST /api/people/:id/password-reset` | none | Reset link emailed to that person | Admin |
 | `PATCH /api/people/:id` | Any of `displayName, active` | Updated person; deactivation ends their sessions | Admin |
 | `POST /api/series` | `{ name, startDate, targetDate, hardLimitDate?, templateId? }` | New series with tracks, stages, team labels and settings copied from the template | Admin |
-| `PATCH /api/series/:id` | Any of `name, targetDate, hardLimitDate, status, bookGroupLabel, enforceWindows, strictMode, defaultCopies, legalDepositCopies, printBufferDays` | Updated series | Admin, coordinator |
+| `PATCH /api/series/:id` | Any of `name, targetDate, hardLimitDate, status, bookGroupLabel, enforceWindows, strictMode, defaultCopies, legalDepositCopies, printBufferDays` | Updated series; existing print records are unchanged | Admin, coordinator |
+| `POST /api/series/:id/print-defaults/apply` | `{ fields: ["copiesPlanned", "depositCopies"] }` | Print records updated to the series defaults for every book whose printing has not started, plus the books skipped; one batch id | Admin, coordinator |
 | `POST /api/series/:id/template` | `{ name, description }` | Template saved from this series' pipeline | Admin, coordinator |
 | `POST`, `PATCH`, `DELETE /api/series/:id/tracks`, `/stages`, `/books` | Definitions | Updated pipeline; tasks created or removed for affected books | Admin, coordinator |
 | `PUT /api/series/:id/members/:personId` | `{ role, teamLabel, capacity }` | Membership | Admin, coordinator |
 | `POST /api/series/:id/windows`, `PATCH /api/windows/:id` | `{ label, startDate, endDate }` | Window, changed tasks | Admin, coordinator |
-| `PATCH /api/books/:id/publishing` | `{ isbn, edition, version }` | Updated book, or 422 for an invalid or duplicate ISBN-13 | Admin, coordinator |
+| `PATCH /api/books/:id/publishing` | `{ isbn, edition, version, confirmChange? }` | Updated book; 422 for an invalid or duplicate ISBN-13; 409 `confirm_required` when the book is already approved for print and `confirmChange` is not true | Admin, coordinator |
 | `POST /api/tasks/:id/schedule` | `{ start, durationDays, windowId, version }` | Changed tasks, projected dates, or a window error | Admin, coordinator |
 | `POST /api/tasks/bulk-schedule` | `{ moves: [{ id, start, durationDays, windowId, version }] }` | Changed tasks, or the failing task ids (rules below) | Admin, coordinator |
 | `POST /api/tasks/:id/assignees` | `{ personIds, leadId, version }` | Updated task | Admin, coordinator |
@@ -833,6 +840,8 @@ People keep these placeholder names until the admin renames them and sends sign-
 The build is split so the status matrix and my tasks are live by 14 October, a week before the first batch goes to print, with the full swimlane editor following on 23 October.
 
 &#91;embedded content: MVP delivery roadmap · 5 phases, 4 gates\]
+
+In text: Spec, 5 to 7 October, ending with the spec signed on 7 October; Foundation, 8 to 14 October, ending with go-live on 14 October; Swimlane, 15 to 23 October, ending with the editor live on 23 October; Workflow, 26 to 30 October, ending with the MVP complete on 30 October; then run support with fixes only from 2 November to 15 December, and phase 2 after the run.
 
 Durations assume one developer working full time with AI-assisted coding, and include the general series model, which adds about a day to Foundation; the new-series wizard waits for phase 2. With less time, move the workload view and baselines out of the Workflow phase rather than delaying go-live, because a tracker that arrives after batch 2 prints has missed most of its value for this run.
 
