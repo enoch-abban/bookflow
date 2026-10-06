@@ -94,7 +94,7 @@ Every book runs through its track's pipeline of stages, which each series define
 | Assignee | A person on a task; a task can have several, one marked lead | KG2 content: EdTech 1, 2 and 3 |
 | Dependency | Finish-to-start link with an optional lag in working days | InDesign (G9) before Overall review (G9) |
 | Batch | A wave of books moving together | G9, G8, G7 |
-| Window | A date band; each series chooses whether windows are enforced or shown for reference only | Oct 20 to 21, enforced |
+| Window | A date band; each series chooses whether windows are enforced or shown for reference only, and enforced series can let marked tasks overflow a set number of days into the next window | Oct 20 to 21, enforced |
 | Review cycle | One pass of review on a task, approved or returned | Iteration 2 on Grade 8 correction |
 | Print record | Copies planned, printed and bound for one book, with binder details | 20 copies per book |
 | Baseline | A frozen copy of planned dates to measure slippage against | Rev 5 |
@@ -135,7 +135,7 @@ One page per book: its ISBN and edition, its pipeline as a horizontal stepper, a
 
 ### Task drawer
 
-Opens from any view. Fields: title, book, stage, assignees (lead marked), planned start and end, duration in working days, status, iteration, Google Drive feedback link, notes, predecessors and successors, comments and activity. Coordinators can edit everything; assignees can change status and add notes.
+Opens from any view. Fields: title, book, stage, assignees (lead marked), planned start and end, duration in working days, status, iteration, Google Drive feedback link, notes, predecessors and successors, comments and activity. Coordinators can edit everything, including an Allow overflow switch when the series enforces windows; assignees can change status and add notes.
 
 ### Review loop
 
@@ -166,7 +166,7 @@ When the agency issues an ISBN, the project manager (coordinator) enters it with
 
 Allowed moves: Not started to In progress; In progress to In review, or straight to Done when the stage has no review step; In review to Done or Returned; Returned to In progress. Any status except Done can move to Blocked and back to the status it came from. The server rejects any other change.
 
-Late and At risk are computed flags, not statuses: Late means today is past the planned end and the task is not Done; At risk means a predecessor is late, or the task's projected end passes its hard deadline, such as the legal deposit date, or its book's projected finish passes the series hard limit.
+Late and At risk are computed flags, not statuses: Late means today is past the planned end and the task is not Done; At risk means a predecessor is late, or the task's projected end passes its hard deadline, such as the legal deposit date, or its book's projected finish passes the series hard limit. Outside window means a started task no longer fits its window after a window change.
 
 ## Swimlane editor
 
@@ -175,7 +175,7 @@ Every bar on the swimlane can be dragged, resized, reassigned and edited in plac
 ### Layout
 
 - **Time axis.** Working days from the series start to two weeks past the target, with weekends drawn as narrow grey columns. Zoom levels: day (default) and week. The toolbar above the axis holds the zoom, the lane grouping toggle, the Critical path toggle and, while strict mode is on, a Strict badge. A vertical line marks today; a dashed line marks the series target date.
-- **Windows.** The Rev 5 windows appear as labelled bands across the top and as faint dividers down the grid. When the series enforces them, as eSTEAM L2 does, every task sits inside one window and cannot cross its edges.
+- **Windows.** The Rev 5 windows appear as labelled bands across the top and as faint dividers down the grid. When the series enforces them, as eSTEAM L2 does, every task belongs to the window it starts in and cannot cross its edge unless the coordinator has allowed it to overflow. The overflowing part of a bar is drawn at 60% opacity past a dashed window edge, with a badge such as "+1d".
 - **Lanes.** Two groupings, switched with a toggle. By person groups lanes by the series' team labels; for eSTEAM L2 that reproduces Rev 5, with one lane per EdTech, reviewer, designer and the Production Unit. By book shows one lane per book with its whole pipeline left to right. Lanes collapse into their role or batch.
 - **Bars.** Fill colour shows stage category; the label shows stage and book ("InDesign · G8"). Status shows as fill style: outline for Not started, solid for In progress, striped for In review, a dashed border with a return-arrow icon for Returned, a check icon and reduced opacity for Done, a danger border for Late or Blocked. An iteration badge ("×2") appears after the first return. The print gate is a diamond.
 - **Dependencies.** Thin arrows from a bar's end to its successor's start. An arrow turns danger-coloured when a successor starts before its predecessor ends.
@@ -184,8 +184,8 @@ Every bar on the swimlane can be dragged, resized, reassigned and edited in plac
 
 | Action | Mouse or touch | Keyboard | Result |
 | --- | --- | --- | --- |
-| Move | Drag bar horizontally | Arrow left or right moves one working day | Bar moves within its window, or into another window when dropped there, snapping to working days; it cannot straddle a window edge; successors preview as ghost bars |
-| Resize | Drag left or right edge | Shift plus arrow | Changes start or duration up to the window's edges; minimum one working day |
+| Move | Drag bar horizontally | Arrow left or right moves one working day | Bar moves within its window, or into another window when dropped there, snapping to working days; it cannot straddle a window edge beyond its overflow allowance; successors preview as ghost bars |
+| Resize | Drag left or right edge | Shift plus arrow | Changes start or duration up to the window's edge, or into the next window up to the overflow allowance for a task allowed to overflow. Pulling an ordinary task past the edge asks the coordinator whether to allow overflow for it. Minimum one working day |
 | Reassign | Drag bar vertically into another lane (person grouping only) | Open popover, change assignee | Lead assignee changes; workload updates live |
 | Edit | Double-click bar | Enter | Inline popover: title, assignees, dates, status, notes, link to full drawer |
 | Create | Drag across empty lane space | N, then fill popover | New task; coordinator picks book and stage |
@@ -227,24 +227,45 @@ The scheduler pushes successors forward when a task moves later, never pulls the
 
 **Propagation.** When a task's dates change, the server walks its successors in topological order and applies:
 
+```typescript
+// Dates are ISO 'YYYY-MM-DD' strings, so plain string comparison orders them.
+// addWorkingDays and nextWorkingDay skip weekends and the holidays table.
+
+function earliestStart(task: Task): string {
+  return maxDate(
+    predecessorLinks(task).map(({ predecessor: p, lagDays }) =>
+      p.durationDays === 0
+        ? addWorkingDays(p.endDate, lagDays)                  // gate: same day
+        : nextWorkingDay(addWorkingDays(p.endDate, lagDays))  // task: next day
+    )
+  );
+}
+
+function pushForward(task: Task): void {
+  if (task.status === 'done' || isStarted(task)) {
+    if (task.startDate < earliestStart(task)) flagAtRisk(task); // frozen: flag, never move
+    return;
+  }
+  const earliest = earliestStart(task);
+  if (task.startDate < earliest) {
+    task.startDate = earliest;
+    task.endDate =
+      task.durationDays === 0
+        ? task.startDate                                      // gate: one date
+        : addWorkingDays(task.startDate, task.durationDays - 1);
+  }
+}
 ```
-def earliest_start(task):
-    return max(
-        add_working_days(p.end, p.lag) if p.duration == 0              # gate: same day
-        else next_working_day(add_working_days(p.end, p.lag))          # task: next day
-        for p in predecessors(task))
 
-if task.start < earliest_start(task):
-    task.start = earliest_start(task)
-    task.end   = task.start if task.duration == 0                      # gate: one date
-                 else add_working_days(task.start, task.duration - 1)
-```
+Done tasks and started tasks (In progress, In review, Returned, or Blocked after starting) are never moved by propagation, just as with window changes. When a slip would push a started task, it keeps its dates and is flagged At risk, and propagation carries on from its real end to its not-started successors. Successors that already start late enough are left alone, so slack absorbs slips. The whole recalculation runs in one database transaction and returns the list of changed tasks.
 
-Tasks marked Done are never moved. Successors that already start late enough are left alone, so slack absorbs slips. The whole recalculation runs in one database transaction and returns the list of changed tasks.
+**Gates.** A gate has no duration, so its start and end are the same working day: the day after its last predecessor ends. Its successors may start on that same day, because a gate marks a decision rather than work; for print approval, printing can begin the day approval is given. Gates take no capacity, never sit in a window and are never placed on a buffer day. `addWorkingDays(d, 0)` returns `d`.
 
-**Gates.** A gate has no duration, so its start and end are the same working day: the day after its last predecessor ends. Its successors may start on that same day, because a gate marks a decision rather than work; for print approval, printing can begin the day approval is given. Gates take no capacity, never sit in a window and are never placed on a buffer day. `add_working_days(d, 0)` returns `d`.
+**Windows.** When a series enforces windows, as eSTEAM L2 does, every task belongs to the window it starts in, and its end must fall inside that window unless the task is allowed to overflow (below); otherwise windows are reference bands only. Publishing stages are exempt in every series, because they run on the ISBN agency's clock rather than the team's windows. When propagation pushes a task past its window's last working day, the task moves into the earliest later window that starts after its predecessors finish and has room for its duration (counting the overflow allowance for tasks allowed to overflow). If no window has room, the task is marked unscheduled (its schedule\_state changes and its window is cleared, while its dates keep the earliest it could run) and parked in an overflow lane until the coordinator extends a window or adds one. Only Admin and Coordinator can edit windows.
 
-**Windows.** When a series enforces windows, as eSTEAM L2 does, every task belongs to one window and its start and end must fall inside it; otherwise windows are reference bands only. Publishing stages are exempt in every series, because they run on the ISBN agency's clock rather than the team's windows. When propagation pushes a task past its window's last working day, the task moves into the earliest later window that starts after its predecessors finish and has enough working days for its duration. If no window has room, the task is marked unscheduled (its schedule\_state changes and its window is cleared, while its dates keep the earliest it could run) and parked in an overflow lane until the coordinator extends a window or adds one. Only Admin and Coordinator can edit windows.
+**Window overflow.** Some work genuinely runs a day or two past its window, like KG2's content restructure in Rev 5, which starts in the 15 to 19 October window and finishes inside 20 to 21 October. Each series sets a maximum overflow in working days (0 by default, 2 for eSTEAM L2), and the coordinator marks which tasks may use it. An overflowing task still belongs to the window it starts in, so its `window_id` does not change; only its end may run up to that many working days into the next window. Overflow days count toward the assignee's workload in the next window, and successors start after the true end date as usual. When a slip pushes an overflow-allowed task, it first uses its allowance and only jumps to the next window with room if it would run past it. Tasks not marked for overflow behave exactly as before. The allowance is counted in working days past the window's end, so a task can overflow into a gap between windows. It is capped at the end of the next window, so a task never crosses two window edges; after the series' last window the full allowance applies. An overflow-allowed task keeps its allowance wherever it lands, so a window "has room" when the task's duration fits between its start and the window's end plus the allowance, capped at the end of the next window.
+
+**Changing windows.** In a series that enforces windows, shrinking, moving or deleting a window refits the tasks it affects automatically. A task whose end now passes the window's edge uses its overflow allowance if it has one; otherwise it moves, with its duration unchanged, to the earliest later window that has room. If no window has room, it becomes unscheduled. A task whose start no longer falls inside any window moves forward the same way; tasks are never pulled earlier. Successors are then pushed by the normal propagation rules. Tasks that have started (In progress, In review, Returned, or Blocked after starting) and Done tasks are never moved by a window change, because work on them has begun or finished. A started task that no longer fits gets an Outside window flag, listed in the preview for the coordinator to resolve, and its successors are still pushed from its real end. Deleting a window clears window\_id on any started or Done tasks still in it and keeps their dates. Windows in a series may not overlap; creating or moving one so that it overlaps another returns 422 naming the window it collides with. After any window change, including an extension, the server also retries every unscheduled task in the series, placing each in the earliest window with room after its predecessors. That is how extending a window clears the overflow lane. The whole change is saved as one batch, so a single undo restores the windows and every task. Before saving, the settings page calls the endpoint with `preview: true` and shows the impact, for example "6 tasks move, 1 becomes unscheduled, projected finish 27 Nov", for the coordinator to confirm. The confirmed save returns the impact actually applied; if the schedule changed after the preview and the result differs, the page says so and shows what was applied, with undo available. The same preview, refit and undo apply when the series' overflow allowance is lowered, when a task's overflow switch is turned off, and when window enforcement is switched on. Raising the allowance moves nothing, though unscheduled tasks are retried. Switching enforcement off moves nothing either: every task's window is cleared, and unscheduled tasks become scheduled at the earliest dates they already hold, outside any window, with their successors pushed as usual. In series that do not enforce windows, changing a window moves nothing.
 
 **Production capacity.** Printing capacity, buffer days and default copies are set per series. For eSTEAM L2, the Production Unit prints 2 books per working day at 22 copies each (20 planned plus 2 for legal deposit). Each printing task is one working day, the Production Unit's capacity is set to 2, and the scheduler reserves a buffer of print\_buffer\_days working days (1 for eSTEAM L2) straight after each batch's last printing day. Automatic placement never puts printing on a buffer day, and that batch's binding cannot start until the buffer has passed. A coordinator can still drag a print task onto a buffer day, and the bar then shows a hatched warning. Where windows are enforced, printing plus the buffer must fit inside the window; books that do not fit at the Production Unit's capacity move to the next window. A batch of three books therefore needs 3 working days and N1 needs 2, which matches the Rev 5 printing windows.
 
@@ -484,7 +505,8 @@ CREATE TABLE series (
   strict_mode          INTEGER NOT NULL DEFAULT 0,
   default_copies       INTEGER NOT NULL DEFAULT 20,
   legal_deposit_copies INTEGER NOT NULL DEFAULT 0,     -- 2 for eSTEAM L2
-  print_buffer_days    INTEGER NOT NULL DEFAULT 1
+  print_buffer_days    INTEGER NOT NULL DEFAULT 1,
+  window_overflow_days INTEGER NOT NULL DEFAULT 0      -- 2 for eSTEAM L2
 );
 
 CREATE TABLE tracks (
@@ -577,6 +599,7 @@ CREATE TABLE windows (
   end_date      TEXT NOT NULL,
   sort_order    INTEGER NOT NULL,
   CHECK (end_date >= start_date)
+  -- must not overlap another window in the series (server-checked, 422)
 );
 
 CREATE TABLE holidays (
@@ -591,10 +614,12 @@ CREATE TABLE tasks (
   book_id        TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
   stage_id       TEXT NOT NULL REFERENCES stages(id),
   -- window_id is null when the task sits outside windows: the series does not
-  -- enforce them, the stage ignores them (publishing), or the task is unscheduled
-  window_id      TEXT REFERENCES windows(id),
+  -- enforce them, the stage ignores them (publishing), or the task is unscheduled;
+  -- also when its window is deleted after work started (ON DELETE SET NULL)
+  window_id      TEXT REFERENCES windows(id) ON DELETE SET NULL,
   schedule_state TEXT NOT NULL DEFAULT 'scheduled'
                  CHECK (schedule_state IN ('scheduled','unscheduled')),
+  overflow_allowed INTEGER NOT NULL DEFAULT 0,  -- end may pass its window by up to series.window_overflow_days
   title          TEXT NOT NULL,
   start_date     TEXT NOT NULL,             -- earliest possible dates while unscheduled
   end_date       TEXT NOT NULL,
@@ -758,17 +783,18 @@ Pages load their data through SvelteKit load functions; every write goes through
 | `POST /api/people/:id/password-reset` | none | Reset link emailed to that person | Admin |
 | `PATCH /api/people/:id` | Any of `displayName, active` | Updated person; deactivation ends their sessions | Admin |
 | `POST /api/series` | `{ name, startDate, targetDate, hardLimitDate?, templateId? }` | New series with tracks, stages, team labels and settings copied from the template | Admin |
-| `PATCH /api/series/:id` | Any of `name, targetDate, hardLimitDate, status, bookGroupLabel, enforceWindows, strictMode, defaultCopies, legalDepositCopies, printBufferDays` | Updated series; existing print records are unchanged | Admin, coordinator |
+| `PATCH /api/series/:id` | Any of `name, targetDate, hardLimitDate, status, bookGroupLabel, enforceWindows, strictMode, defaultCopies, legalDepositCopies, printBufferDays, windowOverflowDays`, preview? | Updated series; existing print records are unchanged. When the change lowers `windowOverflowDays` or turns enforceWindows on, also the refit report, saved with the series change as one undoable batch; with preview set, the report only | Admin, coordinator |
 | `POST /api/series/:id/print-defaults/apply` | `{ fields: ["copiesPlanned", "depositCopies"] }` | Print records updated to the series defaults for every book whose printing has not started, plus the books skipped; one batch id | Admin, coordinator |
 | `POST /api/series/:id/template` | `{ name, description }` | Template saved from this series' pipeline | Admin, coordinator |
 | `POST`, `PATCH`, `DELETE /api/series/:id/tracks`, `/stages`, `/books` | Definitions | Updated pipeline; tasks created or removed for affected books | Admin, coordinator |
 | `PUT /api/series/:id/members/:personId` | `{ role, teamLabel, capacity }` | Membership | Admin, coordinator |
-| `POST /api/series/:id/windows`, `PATCH /api/windows/:id` | `{ label, startDate, endDate }` | Window, changed tasks | Admin, coordinator |
+| `POST /api/series/:id/windows`, `PATCH /api/windows/:id` | `{ label, startDate, endDate, preview? }` | Window, plus every task moved, re-placed, flagged Outside window or made unscheduled, saved as one undoable batch; with preview set, the same report without saving; 422 if it would overlap another window | Admin, coordinator |
+| `DELETE /api/windows/:id` | `{ preview? }` | Removed id, plus the same refit report; started and Done tasks in it keep their dates and lose their window | Admin, coordinator |
 | `PATCH /api/books/:id/publishing` | `{ isbn, edition, version, confirmChange? }` | { book, approvalWithdrawn }, where approvalWithdrawn is true when the print approval was removed and the gate task reset to Not started; 422 for an invalid or duplicate ISBN-13; 409 `confirm_required` when the book is already approved for print and `confirmChange` is not true | Admin, coordinator |
 | `POST /api/tasks/:id/schedule` | `{ start, durationDays, windowId, version }` | Changed tasks, projected dates, or a window error | Admin, coordinator |
 | `POST /api/tasks/bulk-schedule` | `{ moves: [{ id, start, durationDays, windowId, version }] }` | Changed tasks, or the failing task ids (rules below) | Admin, coordinator |
 | `POST /api/tasks/:id/assignees` | `{ personIds, leadId, version }` | Updated task | Admin, coordinator |
-| `PATCH /api/tasks/:id` | Any of `title, notes, status, blockedReason, feedbackUrl, version` | Updated task, or 422 for a status move the rules do not allow | Coordinator; assignees for status, notes and feedback link |
+| `PATCH /api/tasks/:id` | Any of `title, notes, status, blockedReason, feedbackUrl, overflowAllowed, version`, preview? | Updated task, or 422 for a status move the rules do not allow. When overflowAllowed is turned off on a task using its overflow, also the refit report, saved as one undoable batch; with preview set, the report only | Coordinator; assignees for status, notes and feedback link |
 | `POST /api/tasks` | `{ bookId, stageId, windowId, start, durationDays, personIds }` | New task, changed tasks | Admin, coordinator |
 | `DELETE /api/tasks/:id` | `{ version }` | Removed id, relinked dependencies | Admin, coordinator |
 | `POST /api/dependencies` | `{ predecessorId, successorId, lagDays }` | Dependency, changed tasks, or a cycle error | Admin, coordinator |
@@ -784,7 +810,7 @@ Pages load their data through SvelteKit load functions; every write goes through
 
 A stale `version` returns HTTP 409 with the current task so the client can snap back. A permission failure returns 403. Validation uses Zod schemas shared between client and server.
 
-**Bulk schedule.** Used when several selected bars move together. The server checks every move before saving any: each must land inside its target window, unless its stage ignores windows, and every version must be current. If any check fails, nothing is saved and the response names the failing tasks (409 for stale versions, 422 for window violations); moves are never clamped to fit. A valid request applies all the moves, runs one propagation pass from the moved tasks, and saves everything in one transaction under one batch id.
+**Bulk schedule.** Used when several selected bars move together. The server checks every move before saving any: each must land inside its target window (plus the overflow allowance for tasks allowed to overflow), unless its stage ignores windows, and every version must be current. If any check fails, nothing is saved and the response names the failing tasks (409 for stale versions, 422 for window violations); moves are never clamped to fit. A valid request applies all the moves, runs one propagation pass from the moved tasks, and saves everything in one transaction under one batch id.
 
 **Undo and redo.** Every action, together with the moves it propagated, shares one batch id. The undo button walks back through the current user's last 50 batches on the current series, and redo reapplies them; the endpoint enforces the same limit, so a user can only undo their own recent batches. An admin can undo any batch from the activity log page. In every case the server first checks that none of the batch's tasks has changed since; if one has, the undo is refused with those tasks named, rather than overwriting someone's later edit.
 
@@ -830,7 +856,7 @@ Legal deposit deadlines then fall between 23 December 2026 (batches 1 and 2) and
 | Production Unit | Production | All printing; 2 books per working day, 22 copies per book (20 plus 2 for deposit) |
 | External binder | Vendor (not a user) | All binding, tracked by Production |
 
-People keep these placeholder names until the admin renames them and sends sign-in invites. Windows are imported as the 15 date bands from the Rev 5 header, plus reserve windows of one working week each from 25 November to 15 December (the first runs 25 to 27 November, the last 14 to 15 December), so slips have somewhere to land instead of becoming Unscheduled.
+People keep these placeholder names until the admin renames them and sends sign-in invites. Windows are imported as the 15 date bands from the Rev 5 header, plus reserve windows of one working week each from 25 November to 15 December (the first runs 25 to 27 November, the last 14 to 15 December), so slips have somewhere to land instead of becoming Unscheduled. Tasks that already run past their window in Rev 5, such as KG2's content restructure, are imported with overflow allowed.
 
 ## Non-functional requirements
 
