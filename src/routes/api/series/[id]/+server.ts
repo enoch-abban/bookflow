@@ -1,18 +1,23 @@
 import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 import { ulid } from 'ulid';
-import { and, count, eq, gt, isNull } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db } from '#lib/server/db/index.ts';
-import { activityLog, books, series, stages, tasks } from '#lib/server/db/schema.ts';
+import { activityLog, series } from '#lib/server/db/schema.ts';
 import { parseBody, requireCoord } from '#lib/server/api-auth.ts';
 import { parseOr400, updateSeriesSchema } from '#lib/server/validation.ts';
+import { loadSeriesContext } from '#lib/server/series-context.ts';
+import { refit } from '#lib/server/refit.ts';
+import { refitChanges, refitReport, writeTaskChanges } from '#lib/server/schedule-write.ts';
 
 type SeriesRow = typeof series.$inferSelect;
 
 // PATCH /api/series/:id — series settings. Existing print records are not touched.
+// Changing window enforcement or the overflow allowance refits the schedule
+// (spec: Changing windows); with `preview` the impact is returned without saving.
 export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	const { personId } = await requireCoord(locals, params.id);
-	const body = parseOr400(updateSeriesSchema, await parseBody(request));
+	const { preview, ...body } = parseOr400(updateSeriesSchema, await parseBody(request));
 
 	const before = await db.select().from(series).where(eq(series.id, params.id)).then((r) => r[0]);
 	if (!before) throw error(404, 'Series not found');
@@ -28,34 +33,31 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	if (body.defaultCopies !== undefined) patch.defaultCopies = body.defaultCopies;
 	if (body.legalDepositCopies !== undefined) patch.legalDepositCopies = body.legalDepositCopies;
 	if (body.printBufferDays !== undefined) patch.printBufferDays = body.printBufferDays;
+	if (body.windowOverflowDays !== undefined) patch.windowOverflowDays = body.windowOverflowDays;
 
 	const after = { ...before, ...patch };
 	if (after.targetDate < after.startDate) throw error(400, 'The target date cannot be before the series starts.');
 	if (after.hardLimitDate && after.hardLimitDate < after.targetDate)
 		throw error(400, 'The hard limit cannot be before the target date.');
 
-	// Turning enforcement on requires every windowed task to already sit in a window.
-	if (patch.enforceWindows === 1 && !before.enforceWindows) {
-		const [{ n }] = await db
-			.select({ n: count() })
-			.from(tasks)
-			.innerJoin(books, eq(books.id, tasks.bookId))
-			.innerJoin(stages, eq(stages.id, tasks.stageId))
-			.where(and(
-				eq(books.seriesId, before.id),
-				eq(stages.ignoresWindows, 0),
-				gt(tasks.durationDays, 0),
-				eq(tasks.scheduleState, 'scheduled'),
-				isNull(tasks.windowId)
-			));
-		if (n > 0) throw error(409, `${n} ${n === 1 ? 'task sits' : 'tasks sit'} outside any window. Place ${n === 1 ? 'it' : 'them'} in a window before enforcing.`);
-	}
-
 	const changed = Object.fromEntries(
 		(Object.keys(patch) as (keyof SeriesRow)[]).filter((k) => patch[k] !== before[k]).map((k) => [k, patch[k]])
 	);
-	if (!Object.keys(changed).length) return json({ series: before });
 
+	// Window rules changed: re-place tasks under the new rules.
+	const needsRefit = 'enforceWindows' in changed || 'windowOverflowDays' in changed;
+	const ctx = needsRefit ? await loadSeriesContext(before.id) : null;
+	const original = ctx ? new Map([...ctx.taskMap].map(([k, v]) => [k, { ...v }])) : null;
+	const result = ctx
+		? refit(ctx.taskMap, ctx.depList, { enforce: !!after.enforceWindows, windows: ctx.windows, overflowDays: after.windowOverflowDays })
+		: null;
+	const report = ctx && result ? refitReport(ctx, original!, result) : null;
+
+	if (preview) return json({ preview: true, series: after, report });
+	if (!Object.keys(changed).length) return json({ series: before, report: null });
+
+	const batchId = ulid();
+	const now = new Date().toISOString();
 	const updated = await db.transaction(async (tx) => {
 		const [row] = await tx.update(series).set(changed).where(eq(series.id, before.id)).returning();
 		await tx.insert(activityLog).values({
@@ -63,10 +65,12 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 			entity: 'series', entityId: before.id, action: 'update',
 			beforeJson: JSON.stringify(Object.fromEntries(Object.keys(changed).map((k) => [k, before[k as keyof SeriesRow]]))),
 			afterJson: JSON.stringify(changed),
-			createdAt: new Date().toISOString(),
+			batchId, createdAt: now,
 		});
+		if (result?.changes.length)
+			await writeTaskChanges(tx, { seriesId: before.id, actorId: personId, batchId, now, original: original!, changes: refitChanges(result) });
 		return row;
 	});
 
-	return json({ series: updated });
+	return json({ series: updated, report, batchId });
 };

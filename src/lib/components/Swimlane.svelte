@@ -344,8 +344,8 @@
 					const sv = changed.find((c: Task) => c.id === t.id);
 					return sv ? { ...t, ...sv } : t;
 				});
-			} else if (res.status === 409) {
-				// Version conflict: revert this task
+			} else {
+				// Version conflict (409) or window violation (422): revert this task
 				localTasks = localTasks.map((t) =>
 					t.id === d.taskId
 						? { ...t, startDate: d.origStart, endDate: d.origEnd, durationDays: d.durationDays }
@@ -453,7 +453,7 @@
 					const sv = changed.find((c: Task) => c.id === t.id);
 					return sv ? { ...t, ...sv } : t;
 				});
-			} else if (res.status === 409) {
+			} else {
 				localTasks = localTasks.map((t) =>
 					t.id === r.taskId ? { ...t, startDate: r.origStart, endDate: r.origEnd } : t
 				);

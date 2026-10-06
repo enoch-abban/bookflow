@@ -2,22 +2,26 @@ import type { RequestHandler } from './$types';
 import { json, error } from '@sveltejs/kit';
 import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
-import { tasks, books, activityLog } from '#lib/server/db/schema.ts';
-import { eq, inArray } from 'drizzle-orm';
+import { tasks, books } from '#lib/server/db/schema.ts';
+import { inArray } from 'drizzle-orm';
 import { requireCoord, parseBody } from '#lib/server/api-auth.ts';
-import { propagate, deriveEnd } from '#lib/server/scheduler.ts';
-import { loadSeriesContext } from '#lib/server/series-context.ts';
+import { checkExplicitMove, deriveEnd, propagate } from '#lib/server/scheduler.ts';
+import { loadSeriesContext, projectedFinish } from '#lib/server/series-context.ts';
+import { writeTaskChanges, type TaskChange } from '#lib/server/schedule-write.ts';
 
 type Move = {
 	id: string;
 	start: string;
 	durationDays: number;
+	/** Ignored under enforced windows: a task belongs to the window it starts in. */
 	windowId?: string | null;
 	version: number;
 };
 
 type Body = { moves: Move[] };
 
+// POST /api/tasks/bulk-schedule — move several tasks together. Every move is checked
+// before any is saved; nothing is clamped (spec: Bulk schedule).
 export const POST: RequestHandler = async ({ request, locals }) => {
 	const body = await parseBody<Body>(request);
 	if (!body.moves?.length) throw error(400, 'moves array required');
@@ -50,79 +54,40 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const seriesId = seriesIds[0];
 	const { personId } = await requireCoord(locals, seriesId);
 
-	// Load full context
-	const { taskMap, depList } = await loadSeriesContext(seriesId);
+	const ctx = await loadSeriesContext(seriesId);
+	const original = new Map([...ctx.taskMap].map(([k, v]) => [k, { ...v }]));
 
-	// Apply all moves to in-memory map
+	// Check every move against its window before saving any.
+	const changes: TaskChange[] = [];
+	const violations: { id: string; reason: string }[] = [];
 	for (const move of body.moves) {
-		const t = taskMap.get(move.id);
-		if (!t) continue;
-		taskMap.set(move.id, {
-			...t,
-			startDate:    move.start,
-			endDate:      deriveEnd(move.start, move.durationDays),
-			durationDays: move.durationDays,
+		const t = ctx.taskMap.get(move.id)!;
+		const moved = { ...t, startDate: move.start, endDate: deriveEnd(move.start, move.durationDays), durationDays: move.durationDays };
+		const check = checkExplicitMove(moved, ctx.rules);
+		if (!check.ok) { violations.push({ id: move.id, reason: check.reason }); continue; }
+		ctx.taskMap.set(move.id, { ...moved, windowId: check.windowId, scheduleState: 'scheduled' });
+		changes.push({
+			id: move.id, startDate: moved.startDate, endDate: moved.endDate, durationDays: moved.durationDays,
+			windowId: check.windowId, scheduleState: 'scheduled',
+			action: move.durationDays !== t.durationDays ? 'resize' : 'move',
 		});
 	}
+	if (violations.length) {
+		return json({ error: 'window_violation', taskIds: violations.map(v => v.id), violations }, { status: 422 });
+	}
 
-	// Propagate from all moved tasks
-	const pushed = propagate(new Set(taskIds), taskMap, depList);
+	// One propagation pass from all moved tasks
+	const pushed = propagate(new Set(taskIds), ctx.taskMap, ctx.depList, ctx.rules);
+	for (const [tid, p] of pushed) {
+		if (taskIds.includes(tid)) continue;
+		changes.push({ id: tid, ...p, windowId: p.windowId ?? null, action: p.scheduleState === 'unscheduled' ? 'unschedule' : 'move' });
+	}
 
 	const batchId = ulid();
-	const now     = new Date().toISOString();
+	const now = new Date().toISOString();
+	const changed = await db.transaction((tx) =>
+		writeTaskChanges(tx, { seriesId, actorId: personId, batchId, now, original, changes })
+	);
 
-	// Build full change set
-	const allChanges = new Map<string, { startDate: string; endDate: string; durationDays?: number; windowId?: string | null }>();
-	for (const move of body.moves) {
-		allChanges.set(move.id, {
-			startDate:    move.start,
-			endDate:      deriveEnd(move.start, move.durationDays),
-			durationDays: move.durationDays,
-			windowId:     move.windowId,
-		});
-	}
-	for (const [tid, dates] of pushed) {
-		if (!allChanges.has(tid)) allChanges.set(tid, dates);
-	}
-
-	// Persist
-	await db.transaction(async tx => {
-		for (const [tid, change] of allChanges) {
-			const orig = taskMap.get(tid)!;
-			await tx.update(tasks).set({
-				startDate:    change.startDate,
-				endDate:      change.endDate,
-				...(change.durationDays !== undefined ? { durationDays: change.durationDays } : {}),
-				...(change.windowId !== undefined     ? { windowId: change.windowId }         : {}),
-				version:      orig.version + 1,
-				updatedAt:    now,
-			}).where(eq(tasks.id, tid));
-
-			await tx.insert(activityLog).values({
-				id:         ulid(),
-				seriesId,
-				actorId:    personId,
-				entity:     'task',
-				entityId:   tid,
-				action:     taskIds.includes(tid) ? 'move' : 'move',
-				beforeJson: JSON.stringify({ startDate: orig.startDate, endDate: orig.endDate, version: orig.version }),
-				afterJson:  JSON.stringify({ startDate: change.startDate, endDate: change.endDate, version: orig.version + 1 }),
-				batchId,
-				createdAt:  now,
-			});
-		}
-	});
-
-	const changed = [...allChanges.entries()].map(([tid, c]) => {
-		const orig = taskMap.get(tid)!;
-		return {
-			id:           tid,
-			startDate:    c.startDate,
-			endDate:      c.endDate,
-			durationDays: c.durationDays ?? orig.durationDays,
-			version:      orig.version + 1,
-		};
-	});
-
-	return json({ changed, batchId });
+	return json({ changed, batchId, projectedFinish: projectedFinish(ctx.taskMap, ctx.finishTaskIds) });
 };

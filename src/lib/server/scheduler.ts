@@ -1,13 +1,23 @@
 // Working-day scheduler. Holidays table is populated by admins; for now we
 // ship with an empty table and use Mon-Fri as working days.
 
+import { addWorkingDays, deriveEnd, nextWorkingDay, toWorkingDay } from './calendar.ts';
+import { fitsWindow, placeInWindows, windowAt, type Win } from './windows.ts';
+
+export { addWorkingDays, deriveEnd, isWorkingDay, nextWorkingDay, toWorkingDay } from './calendar.ts';
+
 export type SchedTask = {
 	id: string;
 	startDate: string;
 	endDate: string;
 	durationDays: number;
 	status: string;
+	statusBeforeBlock?: string | null;
 	windowId: string | null;
+	scheduleState?: 'scheduled' | 'unscheduled';
+	overflowAllowed?: boolean;
+	/** Publishing stages run on the agency's clock and never sit in a window. */
+	ignoresWindows?: boolean;
 	version: number;
 };
 
@@ -17,105 +27,156 @@ export type SchedDep = {
 	lagDays: number;
 };
 
-// ── Date helpers ─────────────────────────────────────────────────────────────
+/** Window rules for a series. With `enforce` off, windows are reference bands only. */
+export type WindowRules = {
+	enforce: boolean;
+	windows: Win[];
+	overflowDays: number;
+};
 
-export function addWorkingDays(date: string, n: number): string {
-	if (n === 0) return date;
-	const d = new Date(date + 'T12:00:00Z');
-	let count = 0;
-	const sign = n > 0 ? 1 : -1;
-	while (count < Math.abs(n)) {
-		d.setUTCDate(d.getUTCDate() + sign);
-		if (d.getUTCDay() !== 0 && d.getUTCDay() !== 6) count++;
+export const NO_WINDOWS: WindowRules = { enforce: false, windows: [], overflowDays: 0 };
+
+const later = (a: string, b: string) => (a > b ? a : b);
+
+// ── Task classification ─────────────────────────────────────────────────────
+
+const STARTED = new Set(['in_progress', 'in_review', 'returned']);
+
+/** Started or done tasks are never moved automatically (spec: Scheduling rules). */
+export function isFrozen(t: Pick<SchedTask, 'status' | 'statusBeforeBlock'>): boolean {
+	if (t.status === 'done' || STARTED.has(t.status)) return true;
+	return t.status === 'blocked' && !!t.statusBeforeBlock && STARTED.has(t.statusBeforeBlock);
+}
+
+/** Whether window rules apply to this task: enforced series, windowed stage, not a gate. */
+export function isWindowed(t: SchedTask, rules: WindowRules): boolean {
+	return rules.enforce && !t.ignoresWindows && t.durationDays > 0;
+}
+
+export function allowanceFor(t: SchedTask, rules: WindowRules): number {
+	return t.overflowAllowed ? rules.overflowDays : 0;
+}
+
+/** Whether the task, as currently dated, fits window `w` under the rules. */
+export function fitsWindowFor(t: SchedTask, w: Win, rules: WindowRules): boolean {
+	return fitsWindow(t.startDate, t.durationDays, w, rules.windows, allowanceFor(t, rules));
+}
+
+/** Earliest start allowed by predecessors, or null when the task has none. */
+export function earliestStart(
+	id: string,
+	taskMap: Map<string, SchedTask>,
+	predMap: Map<string, { id: string; lagDays: number }[]>
+): string | null {
+	let earliest: string | null = null;
+	for (const pred of predMap.get(id) ?? []) {
+		const p = taskMap.get(pred.id);
+		if (!p) continue;
+		const afterLag = addWorkingDays(p.endDate, pred.lagDays);
+		// Gate: successor may start the same day. Task: the next working day.
+		const cand = p.durationDays === 0 ? toWorkingDay(afterLag) : nextWorkingDay(afterLag);
+		if (!earliest || cand > earliest) earliest = cand;
 	}
-	return d.toISOString().slice(0, 10);
+	return earliest;
 }
 
-export function nextWorkingDay(date: string): string {
-	const d = new Date(date + 'T12:00:00Z');
-	while (d.getUTCDay() === 0 || d.getUTCDay() === 6) {
-		d.setUTCDate(d.getUTCDate() + 1);
+export type Placement = Pick<SchedTask, 'startDate' | 'endDate' | 'windowId' | 'scheduleState'>;
+
+/**
+ * Check a move or resize made by a coordinator. Such moves are never clamped: the task
+ * must start inside a window and end within that window plus its overflow allowance.
+ * The window is always the one the task starts in, whatever the client sent.
+ */
+export function checkExplicitMove(
+	t: SchedTask,
+	rules: WindowRules
+): { ok: true; windowId: string | null } | { ok: false; reason: string } {
+	if (!isWindowed(t, rules)) return { ok: true, windowId: null };
+	const w = windowAt(t.startDate, rules.windows);
+	if (!w) return { ok: false, reason: 'starts outside every window' };
+	if (!fitsWindowFor(t, w, rules))
+		return { ok: false, reason: t.overflowAllowed ? 'runs past its overflow allowance' : 'runs past the window edge' };
+	return { ok: true, windowId: w.id };
+}
+
+/**
+ * Where a not-started task lands when it may start no earlier than `minStart`.
+ * Never pulls a task earlier. Under window rules it stays in the window it starts in
+ * while it fits (using its overflow allowance), otherwise jumps to the earliest later
+ * window with room, otherwise becomes unscheduled at the earliest dates it could run.
+ */
+export function settle(t: SchedTask, minStart: string, rules: WindowRules): Placement {
+	const start = toWorkingDay(later(t.startDate, minStart));
+	const end = deriveEnd(start, t.durationDays);
+	if (!isWindowed(t, rules)) {
+		// Nothing pushes it and no window applies: leave its dates exactly as they are.
+		if (minStart <= t.startDate) return { startDate: t.startDate, endDate: t.endDate, windowId: null, scheduleState: 'scheduled' };
+		return { startDate: start, endDate: end, windowId: null, scheduleState: 'scheduled' };
 	}
-	return d.toISOString().slice(0, 10);
+
+	const allowance = allowanceFor(t, rules);
+	const here = windowAt(start, rules.windows);
+	if (here && fitsWindow(start, t.durationDays, here, rules.windows, allowance))
+		return { startDate: start, endDate: end, windowId: here.id, scheduleState: 'scheduled' };
+
+	const placed = placeInWindows(start, t.durationDays, rules.windows, allowance);
+	if (placed) return { ...placed, scheduleState: 'scheduled' };
+	return { startDate: start, endDate: end, windowId: null, scheduleState: 'unscheduled' };
 }
 
-export function isWorkingDay(date: string): boolean {
-	const dow = new Date(date + 'T12:00:00Z').getUTCDay();
-	return dow !== 0 && dow !== 6;
-}
+const samePlacement = (a: Placement, b: Placement) =>
+	a.startDate === b.startDate && a.endDate === b.endDate && a.windowId === b.windowId &&
+	(a.scheduleState ?? 'scheduled') === (b.scheduleState ?? 'scheduled');
 
-// Derive end date from start + durationDays
-export function deriveEnd(start: string, durationDays: number): string {
-	return durationDays === 0 ? start : addWorkingDays(start, durationDays - 1);
+export function buildPredMap(deps: SchedDep[]) {
+	const predMap = new Map<string, { id: string; lagDays: number }[]>();
+	const succMap = new Map<string, string[]>();
+	for (const dep of deps) {
+		if (!succMap.has(dep.predecessorId)) succMap.set(dep.predecessorId, []);
+		succMap.get(dep.predecessorId)!.push(dep.successorId);
+		if (!predMap.has(dep.successorId)) predMap.set(dep.successorId, []);
+		predMap.get(dep.successorId)!.push({ id: dep.predecessorId, lagDays: dep.lagDays });
+	}
+	return { predMap, succMap };
 }
 
 // ── Propagation ───────────────────────────────────────────────────────────────
 
-export type PropResult = Map<string, { startDate: string; endDate: string }>;
+export type PropResult = Map<string, Placement>;
 
 /**
- * Walk successors in topological BFS order. Only pushes tasks forward —
- * never pulls them earlier. Tasks with status 'done' are skipped.
+ * Walk successors breadth-first from the moved tasks, pushing any that now start
+ * before their predecessors allow. Only pushes forward; successors that already start
+ * late enough are left alone. Started and done tasks keep their dates (they are flagged
+ * At risk elsewhere). Under window rules pushed tasks are re-placed with `settle`.
  *
- * @param movedIds  Set of task IDs whose dates were just changed.
- * @param taskMap   Mutable map; entries for moved IDs must already reflect
- *                  their new dates before this is called.
- * @param deps      All dependencies relevant to this series.
- * @returns         Map of taskId → { startDate, endDate } for every task
- *                  (other than the moved ones) that was pushed.
+ * @param taskMap Mutable; moved tasks must already hold their new dates. Pushed tasks are updated in place.
+ * @returns Placement for every task (other than the moved ones) that changed.
  */
 export function propagate(
 	movedIds: Set<string>,
 	taskMap: Map<string, SchedTask>,
-	deps: SchedDep[]
+	deps: SchedDep[],
+	rules: WindowRules = NO_WINDOWS
 ): PropResult {
-	// Build adjacency lists
-	const succMap = new Map<string, string[]>();
-	const predMap = new Map<string, { id: string; lagDays: number }[]>();
-	for (const dep of deps) {
-		if (!succMap.has(dep.predecessorId)) succMap.set(dep.predecessorId, []);
-		succMap.get(dep.predecessorId)!.push(dep.successorId);
-
-		if (!predMap.has(dep.successorId)) predMap.set(dep.successorId, []);
-		predMap.get(dep.successorId)!.push({ id: dep.predecessorId, lagDays: dep.lagDays });
-	}
-
+	const { predMap, succMap } = buildPredMap(deps);
 	const changed: PropResult = new Map();
 	const queue = [...movedIds];
-	const visited = new Set<string>(movedIds);
 
 	while (queue.length > 0) {
 		const tid = queue.shift()!;
-		for (const succId of (succMap.get(tid) ?? [])) {
+		for (const succId of succMap.get(tid) ?? []) {
 			const succ = taskMap.get(succId);
-			if (!succ || succ.status === 'done') continue;
+			if (!succ || isFrozen(succ)) continue;
 
-			// Compute earliest possible start from all predecessors
-			let earliest: string | null = null;
-			for (const pred of (predMap.get(succId) ?? [])) {
-				const p = taskMap.get(pred.id);
-				if (!p) continue;
+			const earliest = earliestStart(succId, taskMap, predMap);
+			if (!earliest || succ.startDate >= earliest) continue;
 
-				// Gate (durationDays=0): successor can start on the same day as the gate
-				// Task: successor starts on the next working day after pred.end + lag
-				const afterLag = addWorkingDays(p.endDate, pred.lagDays);
-				const cand = p.durationDays === 0 ? afterLag : nextWorkingDay(afterLag);
-
-				if (!earliest || cand > earliest) earliest = cand;
-			}
-
-			if (!earliest || succ.startDate >= earliest) continue; // no push needed
-
-			const newStart = earliest;
-			const newEnd   = deriveEnd(newStart, succ.durationDays);
-
-			taskMap.set(succId, { ...succ, startDate: newStart, endDate: newEnd });
-			changed.set(succId, { startDate: newStart, endDate: newEnd });
-
-			if (!visited.has(succId)) {
-				visited.add(succId);
-				queue.push(succId);
-			}
+			const next = settle(succ, earliest, rules);
+			if (samePlacement(next, succ)) continue;
+			taskMap.set(succId, { ...succ, ...next });
+			changed.set(succId, next);
+			queue.push(succId);
 		}
 	}
 

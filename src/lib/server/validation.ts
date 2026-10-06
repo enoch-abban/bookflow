@@ -50,10 +50,12 @@ export const updateSeriesSchema = z
 		strictMode: z.boolean(),
 		defaultCopies: z.number().int().min(0).max(100000),
 		legalDepositCopies: z.number().int().min(0).max(1000),
-		printBufferDays: z.number().int().min(0).max(30)
+		printBufferDays: z.number().int().min(0).max(30),
+		windowOverflowDays: z.number().int().min(0).max(10)
 	})
 	.partial()
-	.refine((b) => Object.keys(b).length > 0, 'Nothing to update.');
+	.extend({ preview: z.boolean().optional() })
+	.refine((b) => Object.keys(b).some((k) => k !== 'preview'), 'Nothing to update.');
 
 export const memberSchema = z.object({
 	role: z.enum(['coordinator', 'contributor', 'viewer']),

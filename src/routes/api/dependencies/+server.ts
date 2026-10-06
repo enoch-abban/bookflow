@@ -3,6 +3,7 @@ import { json, error } from '@sveltejs/kit';
 import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
 import { dependencies, tasks, books, activityLog } from '#lib/server/db/schema.ts';
+import { writeTaskChanges } from '#lib/server/schedule-write.ts';
 import { eq, inArray } from 'drizzle-orm';
 import { requireCoord, parseBody } from '#lib/server/api-auth.ts';
 import { propagate } from '#lib/server/scheduler.ts';
@@ -59,31 +60,20 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const now   = new Date().toISOString();
 	const lag   = body.lagDays ?? 0;
 
-	// Load full context for post-add propagation
-	const { taskMap } = await loadSeriesContext(seriesId);
-
-	// Add the new dep to in-memory list for propagation
+	// Push successors under the series' window rules; logged as one batch so it can be undone.
+	const ctx = await loadSeriesContext(seriesId);
+	const original = new Map([...ctx.taskMap].map(([k, v]) => [k, { ...v }]));
 	const allDeps = [...depList, { predecessorId: body.predecessorId, successorId: body.successorId, lagDays: lag }];
-	const pushed = propagate(new Set([body.predecessorId]), taskMap, allDeps);
+	const pushed = propagate(new Set([body.predecessorId]), ctx.taskMap, allDeps, ctx.rules);
+	const batchId = ulid();
 
-	await db.transaction(async tx => {
+	const changed = await db.transaction(async tx => {
 		await tx.insert(dependencies).values({
 			id:            depId,
 			predecessorId: body.predecessorId,
 			successorId:   body.successorId,
 			lagDays:       lag,
 		});
-
-		// Apply propagated moves
-		for (const [tid, dates] of pushed) {
-			const orig = taskMap.get(tid)!;
-			await tx.update(tasks).set({
-				startDate: dates.startDate,
-				endDate:   dates.endDate,
-				version:   orig.version + 1,
-				updatedAt: now,
-			}).where(eq(tasks.id, tid));
-		}
 
 		await tx.insert(activityLog).values({
 			id:        ulid(),
@@ -93,14 +83,16 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			entityId:  depId,
 			action:    'create',
 			afterJson: JSON.stringify({ predecessorId: body.predecessorId, successorId: body.successorId, lagDays: lag }),
+			batchId,
 			createdAt: now,
+		});
+
+		return writeTaskChanges(tx, {
+			seriesId, actorId: personId, batchId, now, original,
+			changes: [...pushed].map(([id, p]) => ({ id, ...p, windowId: p.windowId ?? null, action: p.scheduleState === 'unscheduled' ? 'unschedule' : 'move' })),
 		});
 	});
 
 	const dep = await db.select().from(dependencies).where(eq(dependencies.id, depId)).then(r => r[0]);
-	const changed = [...pushed.entries()].map(([tid, d]) => ({
-		id: tid, ...d, version: (taskMap.get(tid)!.version ?? 0) + 1,
-	}));
-
 	return json({ dependency: dep, changed }, { status: 201 });
 };

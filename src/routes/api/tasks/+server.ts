@@ -2,10 +2,10 @@ import type { RequestHandler } from './$types';
 import { json, error } from '@sveltejs/kit';
 import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
-import { tasks, taskAssignees, activityLog, books, stages } from '#lib/server/db/schema.ts';
-import { eq } from 'drizzle-orm';
+import { tasks, taskAssignees, activityLog, books, series, stages, windows } from '#lib/server/db/schema.ts';
+import { asc, eq } from 'drizzle-orm';
 import { requireCoord, parseBody } from '#lib/server/api-auth.ts';
-import { deriveEnd } from '#lib/server/scheduler.ts';
+import { checkExplicitMove, deriveEnd } from '#lib/server/scheduler.ts';
 
 type Body = {
 	bookId:       string;
@@ -26,7 +26,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const book = await db.select({ seriesId: books.seriesId }).from(books).where(eq(books.id, body.bookId)).then(r => r[0]);
 	if (!book) throw error(404, 'Book not found');
 
-	const stage = await db.select({ name: stages.name }).from(stages).where(eq(stages.id, body.stageId)).then(r => r[0]);
+	const stage = await db.select({ name: stages.name, ignoresWindows: stages.ignoresWindows }).from(stages).where(eq(stages.id, body.stageId)).then(r => r[0]);
 	if (!stage) throw error(404, 'Stage not found');
 
 	const { personId } = await requireCoord(locals, book.seriesId);
@@ -36,12 +36,21 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const newEnd  = deriveEnd(body.start, body.durationDays);
 	const title   = stage.name;
 
+	// A new task must fit the window it starts in, like any move (the client's windowId is not trusted).
+	const ser = await db.select().from(series).where(eq(series.id, book.seriesId)).then(r => r[0]);
+	const wins = await db.select().from(windows).where(eq(windows.seriesId, book.seriesId)).orderBy(asc(windows.startDate));
+	const check = checkExplicitMove(
+		{ id: taskId, startDate: body.start, endDate: newEnd, durationDays: body.durationDays, status: 'not_started', windowId: null, ignoresWindows: !!stage.ignoresWindows, version: 1 },
+		{ enforce: !!ser.enforceWindows, windows: wins, overflowDays: ser.windowOverflowDays }
+	);
+	if (!check.ok) return json({ error: 'window_violation', message: `This task ${check.reason}.` }, { status: 422 });
+
 	await db.transaction(async tx => {
 		await tx.insert(tasks).values({
 			id:           taskId,
 			bookId:       body.bookId,
 			stageId:      body.stageId,
-			windowId:     body.windowId ?? null,
+			windowId:     check.windowId,
 			title,
 			startDate:    body.start,
 			endDate:      newEnd,

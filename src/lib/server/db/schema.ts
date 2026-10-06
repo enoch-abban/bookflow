@@ -29,7 +29,8 @@ export const series = sqliteTable('series', {
 	strictMode: integer('strict_mode').notNull().default(0),
 	defaultCopies: integer('default_copies').notNull().default(20),
 	legalDepositCopies: integer('legal_deposit_copies').notNull().default(0),
-	printBufferDays: integer('print_buffer_days').notNull().default(1)
+	printBufferDays: integer('print_buffer_days').notNull().default(1),
+	windowOverflowDays: integer('window_overflow_days').notNull().default(0)
 });
 
 export const tracks = sqliteTable(
@@ -180,6 +181,7 @@ export const tasks = sqliteTable(
 		scheduleState: text('schedule_state', { enum: ['scheduled', 'unscheduled'] })
 			.notNull()
 			.default('scheduled'),
+		overflowAllowed: integer('overflow_allowed').notNull().default(0), // end may pass its window by series.windowOverflowDays
 		title: text('title').notNull(),
 		startDate: text('start_date').notNull(),
 		endDate: text('end_date').notNull(),

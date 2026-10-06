@@ -3,13 +3,17 @@ import { json, error } from '@sveltejs/kit';
 import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
 import { tasks, taskAssignees, dependencies, activityLog, people, seriesMembers } from '#lib/server/db/schema.ts';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { parseBody, versionConflict, loadTaskWithSeries, resolvePerson } from '#lib/server/api-auth.ts';
 import { isAllowedTransition } from '#lib/server/scheduler.ts';
+import { loadSeriesContext } from '#lib/server/series-context.ts';
+import { refit } from '#lib/server/refit.ts';
+import { refitChanges, refitReport, writeTaskChanges } from '#lib/server/schedule-write.ts';
 
 // ── PATCH /api/tasks/:id ─────────────────────────────────────────────────────
-// Body: any of { title, notes, status, blockedReason, feedbackUrl, version }
+// Body: any of { title, notes, status, blockedReason, feedbackUrl, overflowAllowed, version, preview }
 // Coordinator can change anything; assignees can change status, notes, feedbackUrl.
+// Turning overflowAllowed off refits the schedule; with preview the impact is returned unsaved.
 
 export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	const { id } = params;
@@ -19,6 +23,8 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 		status?: string;
 		blockedReason?: string;
 		feedbackUrl?: string;
+		overflowAllowed?: boolean;
+		preview?: boolean;
 		version: number;
 	}>(request);
 
@@ -46,6 +52,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 
 	// Non-coordinator fields are title only
 	if (!isCoord && body.title !== undefined) throw error(403, 'Coordinator role required to change title');
+	if (!isCoord && body.overflowAllowed !== undefined) throw error(403, 'Coordinator role required to change overflow');
 
 	// Assignees can change status, notes, feedbackUrl
 	if (!isAssignee) throw error(403, 'Must be an assignee or coordinator');
@@ -56,6 +63,8 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	if (body.notes        !== undefined) updates.notes        = body.notes;
 	if (body.feedbackUrl  !== undefined) updates.feedbackUrl  = body.feedbackUrl;
 	if (body.blockedReason !== undefined) updates.blockedReason = body.blockedReason;
+	if (body.overflowAllowed !== undefined && body.overflowAllowed !== !!task.overflowAllowed)
+		updates.overflowAllowed = body.overflowAllowed ? 1 : 0;
 
 	if (body.status !== undefined && body.status !== task.status) {
 		if (!isAllowedTransition(task.status, body.status)) {
@@ -81,6 +90,14 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 		}
 	}
 
+	// Switching overflow off may leave the task past its allowance: refit (spec: Changing windows).
+	const ctx = updates.overflowAllowed === 0 ? await loadSeriesContext(seriesId) : null;
+	const original = ctx ? new Map([...ctx.taskMap].map(([k, v]) => [k, { ...v }])) : null;
+	if (ctx) ctx.taskMap.set(id, { ...ctx.taskMap.get(id)!, overflowAllowed: false });
+	const result = ctx ? refit(ctx.taskMap, ctx.depList, ctx.rules) : null;
+	const report = ctx && result ? refitReport(ctx, original!, result) : null;
+	if (body.preview) return json({ preview: true, report });
+
 	if (Object.keys(updates).length === 0) {
 		// Nothing to change (same status, no other fields)
 		return json({ task });
@@ -90,6 +107,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	updates.version   = task.version + 1;
 	updates.updatedAt = now;
 
+	const batchId = ulid();
 	await db.transaction(async tx => {
 		await tx.update(tasks).set(updates).where(eq(tasks.id, id));
 		await tx.insert(activityLog).values({
@@ -99,15 +117,22 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 			entity:     'task',
 			entityId:   id,
 			action:     body.status !== undefined ? 'status' : 'update',
-			beforeJson: JSON.stringify({ status: task.status, version: task.version }),
+			beforeJson: JSON.stringify({ status: task.status, overflowAllowed: task.overflowAllowed, version: task.version }),
 			afterJson:  JSON.stringify({ ...updates }),
+			batchId,
 			createdAt:  now,
 		});
+
+		if (result?.changes.length) {
+			// This task's version was just bumped above.
+			original!.set(id, { ...original!.get(id)!, version: task.version + 1 });
+			await writeTaskChanges(tx, { seriesId, actorId: personId, batchId, now, original: original!, changes: refitChanges(result) });
+		}
 	});
 
 	// Re-fetch updated task
 	const updated = await db.select().from(tasks).where(eq(tasks.id, id)).then(r => r[0]);
-	return json({ task: updated });
+	return json({ task: updated, report, batchId });
 };
 
 // ── DELETE /api/tasks/:id ────────────────────────────────────────────────────

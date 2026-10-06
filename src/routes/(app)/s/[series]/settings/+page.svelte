@@ -23,6 +23,7 @@
 		hardLimitDate: data.series.hardLimitDate ?? '',
 		bookGroupLabel: data.series.bookGroupLabel,
 		enforceWindows: !!data.series.enforceWindows,
+		windowOverflowDays: data.series.windowOverflowDays,
 		strictMode: !!data.series.strictMode
 	});
 	const printFromServer = () => ({
@@ -43,6 +44,7 @@
 			(general.hardLimitDate || null) !== data.series.hardLimitDate ||
 			general.bookGroupLabel !== data.series.bookGroupLabel ||
 			general.enforceWindows !== !!data.series.enforceWindows ||
+			general.windowOverflowDays !== data.series.windowOverflowDays ||
 			general.strictMode !== !!data.series.strictMode
 	);
 	const printDirty = $derived(
@@ -53,18 +55,98 @@
 
 	async function save(body: Record<string, unknown>, set: (f: Flash) => void, resync: () => void) {
 		busy = true;
-		const res = await api('PATCH', `/api/series/${data.series.id}`, body);
+		const res = await api<SaveResult>('PATCH', `/api/series/${data.series.id}`, body);
 		busy = false;
 		set(res.ok ? { ok: true, text: 'Saved.' } : { ok: false, text: res.message });
 		if (res.ok) {
 			await invalidateAll();
 			resync();
 		}
+		return res;
 	}
 
-	function saveGeneral(e: SubmitEvent) {
+	// Changing window rules can move tasks: preview the impact, then confirm (spec: Changing windows).
+	type Report = {
+		moved: number;
+		unscheduled: number;
+		placed: number;
+		rewindowed: number;
+		outsideWindow: { id: string; label: string }[];
+		projectedFinish: { before: string | null; after: string | null };
+		changes: {
+			id: string;
+			label: string;
+			kind: string;
+			from: { startDate: string; window: string | null };
+			to: { startDate: string; window: string | null };
+		}[];
+	};
+	type SaveResult = { report: Report | null; batchId?: string };
+	let pending = $state<{ body: Record<string, unknown>; report: Report } | null>(null);
+	let lastBatch = $state<string | null>(null);
+
+	const impactful = (r: Report | null): r is Report =>
+		!!r && r.moved + r.unscheduled + r.placed + r.rewindowed + r.outsideWindow.length > 0;
+	const sameImpact = (a: Report, b: Report) =>
+		a.moved === b.moved && a.unscheduled === b.unscheduled && a.placed === b.placed &&
+		a.outsideWindow.length === b.outsideWindow.length && a.projectedFinish.after === b.projectedFinish.after;
+	const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+	function summary(r: Report) {
+		const parts: string[] = [];
+		if (r.moved) parts.push(plural(r.moved, 'task moves', 'tasks move'));
+		if (r.unscheduled) parts.push(plural(r.unscheduled, 'becomes unscheduled', 'become unscheduled'));
+		if (r.placed) parts.push(plural(r.placed, 'unscheduled task is placed', 'unscheduled tasks are placed'));
+		if (r.rewindowed) parts.push(plural(r.rewindowed, 'task changes window', 'tasks change window'));
+		if (r.outsideWindow.length)
+			parts.push(plural(r.outsideWindow.length, 'started task is flagged Outside window', 'started tasks are flagged Outside window'));
+		if (r.projectedFinish.after && r.projectedFinish.after !== r.projectedFinish.before)
+			parts.push(`projected finish ${fmtDate(r.projectedFinish.after)}`);
+		return parts.join(', ');
+	}
+
+	async function saveGeneral(e: SubmitEvent) {
 		e.preventDefault();
-		save({ ...general, hardLimitDate: general.hardLimitDate || null }, (f) => (generalFlash = f), () => (general = generalFromServer()));
+		const body = { ...general, hardLimitDate: general.hardLimitDate || null };
+		const rulesChanged =
+			general.enforceWindows !== !!data.series.enforceWindows ||
+			general.windowOverflowDays !== data.series.windowOverflowDays;
+		if (rulesChanged) {
+			busy = true;
+			const res = await api<SaveResult>('PATCH', `/api/series/${data.series.id}`, { ...body, preview: true });
+			busy = false;
+			if (!res.ok) return (generalFlash = { ok: false, text: res.message });
+			if (impactful(res.data.report)) return (pending = { body, report: res.data.report });
+		}
+		await commitGeneral(body, null);
+	}
+
+	async function commitGeneral(body: Record<string, unknown>, previewed: Report | null) {
+		pending = null;
+		const res = await save(body, (f) => (generalFlash = f), () => (general = generalFromServer()));
+		if (!res.ok) return;
+		const applied = res.data.report;
+		lastBatch = impactful(applied) ? (res.data.batchId ?? null) : null;
+		if (!impactful(applied)) return;
+		generalFlash = {
+			ok: true,
+			text: previewed && !sameImpact(previewed, applied)
+				? `Saved, but the schedule changed after the preview. Applied: ${summary(applied)}.`
+				: `Saved. ${summary(applied)}.`
+		};
+	}
+
+	async function undoLast() {
+		if (!lastBatch) return;
+		busy = true;
+		const res = await api('POST', '/api/undo', { batchId: lastBatch, seriesId: data.series.id });
+		busy = false;
+		lastBatch = null;
+		generalFlash = res.ok ? { ok: true, text: 'Undone.' } : { ok: false, text: res.message };
+		if (res.ok) {
+			await invalidateAll();
+			general = generalFromServer();
+		}
 	}
 	function savePrint(e: SubmitEvent) {
 		e.preventDefault();
@@ -101,12 +183,9 @@
 	let inviteEmail = $state('');
 
 	const groups = $derived.by(() => {
-		const map = new Map<string, Member[]>();
-		for (const m of data.members) {
-			const key = m.teamLabel || 'No team label';
-			map.set(key, [...(map.get(key) ?? []), m]);
-		}
-		return [...map.entries()];
+		const byLabel: Record<string, Member[]> = {};
+		for (const m of data.members) (byLabel[m.teamLabel || 'No team label'] ??= []).push(m);
+		return Object.entries(byLabel);
 	});
 
 	async function teamCall(method: string, url: string, body: unknown, okText: string) {
@@ -209,9 +288,15 @@
 				<input type="checkbox" bind:checked={general.enforceWindows} />
 				<span>
 					<strong>Enforce windows</strong>
-					<span class="hint">Every task must sit inside one window and can't cross its edges. Publishing stages are always exempt.</span>
+					<span class="hint">Every task belongs to the window it starts in and can't cross its edge. Publishing stages are always exempt.</span>
 				</span>
 			</label>
+			{#if general.enforceWindows}
+				<label class="field overflow">
+					<span>Overflow allowance <span class="hint">working days a task marked "Allow overflow" may run past its window</span></span>
+					<input class="input" type="number" min="0" max="10" step="1" bind:value={general.windowOverflowDays} required />
+				</label>
+			{/if}
 			<label class="switch">
 				<input type="checkbox" bind:checked={general.strictMode} />
 				<span>
@@ -220,9 +305,35 @@
 				</span>
 			</label>
 
+			{#if pending}
+				<div class="impact" role="alertdialog" aria-label="Confirm schedule changes">
+					<p><strong>This change re-plans the schedule:</strong> {summary(pending.report)}.</p>
+					<ul class="impact-list">
+						{#each pending.report.changes.slice(0, 8) as c (c.id)}
+							<li>
+								{c.label}:
+								{#if c.kind === 'unscheduled'}becomes unscheduled
+								{:else if c.kind === 'window'}{c.from.window ?? 'no window'} → {c.to.window ?? 'no window'}
+								{:else}{fmtDate(c.from.startDate)} → {fmtDate(c.to.startDate)}{c.to.window ? ` (${c.to.window})` : ''}{/if}
+							</li>
+						{/each}
+						{#each pending.report.outsideWindow.slice(0, 4) as o (o.id)}
+							<li class="warn">{o.label}: started, stays put, flagged Outside window</li>
+						{/each}
+					</ul>
+					{#if pending.report.changes.length > 8}<p class="hint">…and {pending.report.changes.length - 8} more.</p>{/if}
+					<div class="form-foot">
+						<button type="button" class="btn btn-ghost btn-lg" onclick={() => (pending = null)}>Cancel</button>
+						<button type="button" class="btn btn-primary btn-lg" disabled={busy}
+							onclick={() => pending && commitGeneral(pending.body, pending.report)}>Apply changes</button>
+					</div>
+				</div>
+			{/if}
+
 			<div class="form-foot">
 				{#if generalFlash}<p class="notice" class:notice--ok={generalFlash.ok} class:notice--error={!generalFlash.ok} role="status">{generalFlash.text}</p>{/if}
-				<button class="btn btn-primary btn-lg" disabled={busy || !generalDirty}>Save changes</button>
+				{#if lastBatch}<button type="button" class="btn btn-ghost btn-lg" disabled={busy} onclick={undoLast}>Undo</button>{/if}
+				<button class="btn btn-primary btn-lg" disabled={busy || !generalDirty || !!pending}>Save changes</button>
 			</div>
 		</form>
 	</section>
@@ -399,6 +510,12 @@
 	.switch input { margin-top: 3px; accent-color: var(--primary); width: 16px; height: 16px; flex-shrink: 0; }
 	.switch > span { display: flex; flex-direction: column; font-size: 13px; }
 	.hint { font-size: 12px; color: var(--muted-foreground); }
+
+	.overflow { max-width: 340px; margin-left: 28px; }
+	.impact { border: 1px solid var(--tertiary); background: var(--tertiary-subtle); color: var(--tertiary-foreground); border-radius: var(--radius); padding: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-2); font-size: 13px; }
+	.impact p { margin: 0; }
+	.impact-list { margin: 0; padding-left: var(--sp-5); display: flex; flex-direction: column; gap: 2px; }
+	.impact-list .warn { color: var(--danger); }
 
 	.form-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--sp-3); }
 	.form-foot .notice { margin: 0 auto 0 0; }
