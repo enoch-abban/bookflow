@@ -20,7 +20,8 @@
 		"db:migrate": "drizzle-kit migrate",
 		"db:studio": "drizzle-kit studio",
 		"db:seed": "npx tsx src/lib/server/db/seed/esteam-l2.ts",
-		"auth:schema": "auth generate --config src/lib/server/auth.ts --output src/lib/server/db/auth.schema.ts --yes"
+		"auth:schema": "auth generate --config src/lib/server/auth.ts --output src/lib/server/db/auth.schema.ts --yes",
+		"auth:invite": "npx tsx src/lib/server/db/seed/invite-link.ts"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",

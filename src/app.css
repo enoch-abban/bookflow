@@ -142,3 +142,42 @@ button { cursor: pointer; font: inherit; }
 	color: var(--primary-subtle-foreground);
 	font-size: 11px; font-weight: 700;
 }
+
+/* Forms and buttons ─────────────────────────────────────────────────────────  */
+.field { display: flex; flex-direction: column; gap: var(--sp-1); }
+.field > span { font-size: 13px; font-weight: 500; }
+.field .hint { font-size: 12px; color: var(--muted-foreground); font-weight: 400; }
+.input {
+	font: inherit;
+	padding: var(--sp-2) var(--sp-3);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	background: var(--background);
+	color: var(--foreground);
+	min-width: 0;
+}
+.input:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.input--code { font-size: 20px; letter-spacing: 0.4em; text-align: center; font-variant-numeric: tabular-nums; }
+
+.btn {
+	padding: var(--sp-1) var(--sp-3);
+	border-radius: var(--radius-sm);
+	border: 1px solid transparent;
+	font-size: 13px; font-weight: 500;
+	white-space: nowrap;
+	transition: background 0.1s;
+}
+.btn:disabled { opacity: 0.6; cursor: default; }
+.btn-lg { padding: var(--sp-2) var(--sp-4); font-size: 14px; }
+.btn-primary { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+.btn-primary:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-hover); }
+.btn-ghost { background: transparent; color: var(--muted-foreground); border-color: var(--border); }
+.btn-ghost:hover:not(:disabled) { background: var(--muted); color: var(--foreground); }
+.btn-danger { background: transparent; color: var(--danger); border-color: var(--border); }
+.btn-danger:hover:not(:disabled) { background: var(--danger-subtle); border-color: var(--danger); }
+.btn-link { background: none; border: none; padding: 0; color: var(--primary); font-size: 13px; }
+.btn-link:hover { text-decoration: underline; }
+
+.notice { padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-sm); font-size: 13px; }
+.notice--error { background: var(--danger-subtle); color: var(--danger); }
+.notice--ok { background: var(--success-subtle); color: var(--success); }

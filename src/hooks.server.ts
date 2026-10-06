@@ -1,4 +1,6 @@
 import type { Handle } from '@sveltejs/kit/hooks';
+import { redirect } from '@sveltejs/kit';
+import { sequence } from '@sveltejs/kit/hooks';
 import { building } from '$app/env';
 import { auth } from '#lib/server/auth.ts';
 import { svelteKitHandler } from 'better-auth/svelte-kit';
@@ -14,4 +16,18 @@ const handleBetterAuth: Handle = async ({ event, resolve }) => {
 	return svelteKitHandler({ event, resolve, auth, building });
 };
 
-export const handle: Handle = handleBetterAuth;
+const PUBLIC_PAGES = ['/login', '/invite/', '/reset-password'];
+
+/** Send signed-out visitors to /login. API routes answer 401 themselves via api-auth. */
+const requireSignIn: Handle = async ({ event, resolve }) => {
+	const path = event.url.pathname;
+	const isPublic = PUBLIC_PAGES.some((p) => path === p || path.startsWith(p.endsWith('/') ? p : `${p}/`));
+
+	if (!event.locals.user && !isPublic && !path.startsWith('/api/')) {
+		const next = path === '/' ? '' : `?next=${encodeURIComponent(path + event.url.search)}`;
+		throw redirect(303, `/login${next}`);
+	}
+	return resolve(event);
+};
+
+export const handle: Handle = sequence(handleBetterAuth, requireSignIn);
