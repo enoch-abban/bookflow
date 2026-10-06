@@ -20,6 +20,7 @@
 			<a href="/s/{data.seriesId}">Matrix</a>
 			<a href="/s/{data.seriesId}/swimlane">Swimlane</a>
 			<a href="/me">My tasks</a>
+			{#if data.isAdmin}<a href="/settings/people">People</a>{/if}
 		</div>
 	{/if}
 	{#if data.user}

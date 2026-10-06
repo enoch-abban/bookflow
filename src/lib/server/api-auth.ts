@@ -2,6 +2,9 @@ import { error, json } from '@sveltejs/kit';
 import { db } from '#lib/server/db/index.ts';
 import { people, seriesMembers } from '#lib/server/db/schema.ts';
 import { and, eq } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/sqlite-core';
+
+const coordMembers = alias(seriesMembers, 'coord_members');
 
 export type PersonCtx = { personId: string; isAdmin: boolean; role: string };
 
@@ -41,6 +44,34 @@ export async function requireMember(locals: App.Locals, seriesId: string): Promi
 
 	if (!mem) throw error(403, 'Not a series member');
 	return { personId, isAdmin: false, role: mem.role };
+}
+
+/** Require a global admin. */
+export async function requireAdmin(locals: App.Locals) {
+	const ctx = await resolvePerson(locals);
+	if (!ctx.isAdmin) throw error(403, 'Admin role required');
+	return ctx;
+}
+
+/**
+ * Admin, or a coordinator of any series the target person belongs to
+ * (spec: coordinators invite their own series' members).
+ */
+export async function requireCanManagePerson(locals: App.Locals, targetPersonId: string) {
+	const ctx = await resolvePerson(locals);
+	if (ctx.isAdmin) return ctx;
+
+	const shared = await db
+		.select({ seriesId: seriesMembers.seriesId })
+		.from(seriesMembers)
+		.innerJoin(
+			coordMembers,
+			and(eq(coordMembers.seriesId, seriesMembers.seriesId), eq(coordMembers.personId, ctx.personId), eq(coordMembers.role, 'coordinator'))
+		)
+		.where(eq(seriesMembers.personId, targetPersonId))
+		.limit(1);
+	if (!shared.length) throw error(403, "Admin, or coordinator of this person's series, required");
+	return ctx;
 }
 
 /** Parse JSON body; throw 400 on failure. */
