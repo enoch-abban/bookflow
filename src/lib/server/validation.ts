@@ -36,3 +36,27 @@ export function parseOr400<T>(schema: z.ZodType<T>, data: unknown): T {
 	if (!result.success) throw error(400, result.error.issues[0].message);
 	return result.data;
 }
+
+const isoDate = z.iso.date('Use a YYYY-MM-DD date.');
+
+export const updateSeriesSchema = z
+	.object({
+		name: z.string().trim().min(1, 'Enter a series name.').max(120),
+		targetDate: isoDate,
+		hardLimitDate: isoDate.nullable(),
+		status: z.enum(['planning', 'active', 'closed']),
+		bookGroupLabel: z.string().trim().min(1, 'Enter a label for book groups.').max(40),
+		enforceWindows: z.boolean(),
+		strictMode: z.boolean(),
+		defaultCopies: z.number().int().min(0).max(100000),
+		legalDepositCopies: z.number().int().min(0).max(1000),
+		printBufferDays: z.number().int().min(0).max(30)
+	})
+	.partial()
+	.refine((b) => Object.keys(b).length > 0, 'Nothing to update.');
+
+export const memberSchema = z.object({
+	role: z.enum(['coordinator', 'contributor', 'viewer']),
+	teamLabel: z.string().trim().max(60).nullable().transform((v) => v || null),
+	capacity: z.number().min(0.25, 'Capacity must be at least 0.25.').max(20)
+});
