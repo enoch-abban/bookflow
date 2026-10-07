@@ -99,7 +99,7 @@ Every book runs through its track's pipeline of stages, which each series define
 | Print record | Copies planned, printed and bound for one book, with binder details | 20 copies per book |
 | Baseline | A frozen copy of planned dates to measure slippage against | Rev 5 |
 
-**Tracks in eSTEAM L2.** The image track covers Grades 1 to 9: image generation (Grades 1 to 3 only), image review and correction, overall content review, converting to InDesign, post-layout review, correction and iteration, publishing (manuscript submission and payment, agency review, ISBN issue, all running alongside layout), print approval, printing and binding. The content track covers N1, N2, KG1 and KG2: content restructure (or generation, for N1) with illustration and image generation, content and images review, then the same layout, review, ISBN, approval, print and binding stages. Stages a book does not need are simply not created, so Grade 9 has no image generation task. Another series defines its own tracks; a textbook run might use a single track of manuscript, copyedit, layout, proofread, ISBN and metadata, print approval, printing, binding and legal deposit; an ebook run would end with an online release stage instead of printing.
+**Tracks in eSTEAM L2.** The image track covers Grades 1 to 9: image generation (Grades 1 to 3 only), image review and correction, overall content review, converting to InDesign, post-layout review, correction and iteration, publishing (manuscript submission and payment, agency review, ISBN issue, all running alongside layout), print approval, printing and binding. The content track covers N1, N2, KG1 and KG2: content restructure (or generation, for N1) with illustration and image generation, content and images review, then the same layout, review, ISBN, approval, print and binding stages. Stages a book does not need are recorded as skips, so Grade 9 has a skip for image generation and no task for it. Another series defines its own tracks; a textbook run might use a single track of manuscript, copyedit, layout, proofread, ISBN and metadata, print approval, printing, binding and legal deposit; an ebook run would end with an online release stage instead of printing.
 
 **Stage categories** drive colour on the swimlane: Creation (writing, illustration, image generation), Review, Layout, Publishing (ISBN assignment, copyright and catalogue registration, metadata, legal deposit, online release) and Production; every working stage in any series maps to one of these five, so colours work for any pipeline. A sixth category, Gate, covers approval points such as print approval: a gate takes no working days, is drawn as a diamond in --foreground, and completes only through its approval action, never through a status button.
 
@@ -266,6 +266,43 @@ Done tasks and started tasks (In progress, In review, Returned, or Blocked after
 **Window overflow.** Some work genuinely runs a day or two past its window, like KG2's content restructure in Rev 5, which starts in the 15 to 19 October window and finishes inside 20 to 21 October. Each series sets a maximum overflow in working days (0 by default, 2 for eSTEAM L2), and the coordinator marks which tasks may use it. An overflowing task still belongs to the window it starts in, so its `window_id` does not change; only its end may run up to that many working days into the next window. Overflow days count toward the assignee's workload in the next window, and successors start after the true end date as usual. When a slip pushes an overflow-allowed task, it first uses its allowance and only jumps to the next window with room if it would run past it. Tasks not marked for overflow behave exactly as before. The allowance is counted in working days past the window's end, so a task can overflow into a gap between windows. It is capped at the end of the next window, so a task never crosses two window edges; after the series' last window the full allowance applies. An overflow-allowed task keeps its allowance wherever it lands, so a window "has room" when the task's duration fits between its start and the window's end plus the allowance, capped at the end of the next window.
 
 **Changing windows.** In a series that enforces windows, shrinking, moving or deleting a window refits the tasks it affects automatically. A task whose end now passes the window's edge uses its overflow allowance if it has one; otherwise it moves, with its duration unchanged, to the earliest later window that has room. If no window has room, it becomes unscheduled. A task whose start no longer falls inside any window moves forward the same way; tasks are never pulled earlier. Successors are then pushed by the normal propagation rules. Tasks that have started (In progress, In review, Returned, or Blocked after starting) and Done tasks are never moved by a window change, because work on them has begun or finished. A started task that no longer fits gets an Outside window flag, listed in the preview for the coordinator to resolve, and its successors are still pushed from its real end. Deleting a window clears window\_id on any started or Done tasks still in it and keeps their dates. Windows in a series may not overlap; creating or moving one so that it overlaps another returns 422 naming the window it collides with. After any window change, including an extension, the server also retries every unscheduled task in the series, placing each in the earliest window with room after its predecessors. That is how extending a window clears the overflow lane. The whole change is saved as one batch, so a single undo restores the windows and every task. Before saving, the settings page calls the endpoint with `preview: true` and shows the impact, for example "6 tasks move, 1 becomes unscheduled, projected finish 27 Nov", for the coordinator to confirm. The confirmed save returns the impact actually applied; if the schedule changed after the preview and the result differs, the page says so and shows what was applied, with undo available. The same preview, refit and undo apply when the series' overflow allowance is lowered, when a task's overflow switch is turned off, and when window enforcement is switched on. Raising the allowance moves nothing, though unscheduled tasks are retried. Switching enforcement off moves nothing either: every task's window is cleared, and unscheduled tasks become scheduled at the earliest dates they already hold, outside any window, with their successors pushed as usual. In series that do not enforce windows, changing a window moves nothing.
+
+### Pipeline changes
+
+Changes to tracks, stages and books come in two kinds. Edits never create or delete tasks and save straight away. Structural changes do, so they follow the same pattern as window changes: a preview, then one undoable batch, with the impact actually applied returned. Started tasks are never moved or deleted by either kind.
+
+**Edits**
+
+| Item | Editable | Rules |
+| --- | --- | --- |
+| Track | Name, order | None |
+| Stage | Name, category, default duration, review flag, external flag, ignores windows, deadline rule | Category cannot change to or from Gate once the stage has tasks, because gates have no duration. Default duration applies to new tasks only. Turning the review flag off is refused while any of the stage's tasks are In review or Returned. Changing ignores windows or the deadline rule recomputes the affected not-started tasks with a preview. |
+| Book | Code, name, group, batch, order | Code stays unique in the series. |
+
+**Structural changes**
+
+| Change | Rule |
+| --- | --- |
+| Add a book | The coordinator chooses how to schedule it. "Like another book" copies that book's dates, windows, skips and assignees, which suits a book joining an existing batch. "From a date" chains the tasks from a chosen date, defaulting to the next working day, using default durations and placing them in windows like a slip. Tasks are linked by the series' dependency pattern, and a print record is created from the series defaults. |
+| Skip a stage for a book | Recorded as a skip, not just a missing task, so later changes never recreate it. Skipping deletes the book's not-started task for that stage and relinks around it; it is refused if the task has started or is Done. Lifting a skip creates the task again. |
+| Add a stage | The dialog asks which tracks get it, which books (all ticked, except books whose next stage has already started), what it starts after and finishes before, and how it joins: "Insert into the chain" replaces the direct link between those stages, while "Run alongside" keeps it, as the ISBN process does. Each book's new task is placed after its predecessor, and successors are pushed by normal propagation. |
+| Remove a stage or book | Not-started tasks are deleted and their dependencies relinked around them. Started tasks block the removal until they finish or are reset to Not started. Done tasks are kept as history: the stage or book is archived, hidden from the matrix and swimlane, and left out of projections, but still shown in the book page and activity log. A book with an ISBN or a print approval can only be archived. Nothing is hard-deleted once any of its work has started. |
+| Change a book's track | Stages in both tracks keep their tasks untouched, progress included. Stages only in the old track are removed under the rule above, and started ones block the change. Stages only in the new track are added under the add-a-stage rule. |
+| Reorder stages | Changes the matrix column order only; dependencies are untouched, because books' chains may have been adjusted by hand. New series made from a template use the template's dependency pattern, not the column order. |
+| Deadline rules | Edited here, as part of the stage, since a rule applies to every book. Changing one recomputes due dates for tasks not yet Done. Overriding a single task's deadline from the book page is left for phase 2. |
+
+**Structural endpoints**
+
+| Method and path | Body | Returns | Roles |
+| --- | --- | --- | --- |
+| `POST /api/series/:id/tracks`, `DELETE /api/tracks/:id` | `{ name, stageIds }` | Track; delete refused while any book uses it | Admin, coordinator |
+| `POST /api/series/:id/books` | `{ code, name, trackId, groupLabel?, batch?, schedule: { likeBookId } or { fromDate }, preview? }` | Book, its tasks, links and print record | Admin, coordinator |
+| `POST /api/series/:id/stages` | `{ name, category, trackIds, defaultDays, flags, after, before, mode: "insert" or "alongside", bookIds, preview? }` | Stage, pattern links, new tasks and pushed successors | Admin, coordinator |
+| `PUT`, `DELETE /api/books/:id/skips/:stageId` | `{ preview? }` | Skip recorded and task removed, or skip lifted and task created | Admin, coordinator |
+| `PUT /api/books/:id/track` | `{ trackId, preview? }` | Tasks kept, removed and added, or 409 naming started tasks in the way | Admin, coordinator |
+| `DELETE /api/stages/:id`, `DELETE /api/books/:id` | `{ preview? }` | Deleted, or archived when Done work exists; 409 naming started tasks | Admin, coordinator |
+| `PUT /api/series/:id/stage-order` | `{ stageIds }` | New column order | Admin, coordinator |
+| `PUT /api/series/:id/track-order`, `PUT /api/series/:id/book-order` | `{ trackIds }` or `{ bookIds }` | New track or book order; no tasks or dependencies change | Admin, coordinator |
 
 **Production capacity.** Printing capacity, buffer days and default copies are set per series. For eSTEAM L2, the Production Unit prints 2 books per working day at 22 copies each (20 planned plus 2 for legal deposit). Each printing task is one working day, the Production Unit's capacity is set to 2, and the scheduler reserves a buffer of print\_buffer\_days working days (1 for eSTEAM L2) straight after each batch's last printing day. Automatic placement never puts printing on a buffer day, and that batch's binding cannot start until the buffer has passed. A coordinator can still drag a print task onto a buffer day, and the bar then shows a hatched warning. Where windows are enforced, printing plus the buffer must fit inside the window; books that do not fit at the Production Unit's capacity move to the next window. A batch of three books therefore needs 3 working days and N1 needs 2, which matches the Rev 5 printing windows.
 
@@ -476,7 +513,7 @@ drizzle/          migrations
 
 ## Database schema
 
-Twenty-one tables hold the plan, its history and its people; auth tables are generated by Better Auth and linked to `people` through `user_id`. Dates are ISO text, IDs are ULID text, and every mutable task row carries a `version` for optimistic locking.
+Twenty-three tables hold the plan, its history and its people; auth tables are generated by Better Auth and linked to `people` through `user_id`. Dates are ISO text, IDs are ULID text, and every mutable task row carries a `version` for optimistic locking.
 
 ```sql
 -- Series, templates and pipeline definition --------------------------
@@ -531,6 +568,7 @@ CREATE TABLE stages (
   is_external     INTEGER NOT NULL DEFAULT 0,  -- done by an outside body, e.g. the ISBN agency
   ignores_windows INTEGER NOT NULL DEFAULT 0,  -- 1 for publishing stages
   deadline_rule   TEXT,                     -- JSON, e.g. {"after":"isbn_issued","months":2}
+  archived_at     TEXT,                     -- set on removal when Done tasks keep history
   UNIQUE (series_id, key)
 );
 
@@ -538,6 +576,13 @@ CREATE TABLE stage_tracks (
   stage_id      TEXT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
   track_id      TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
   PRIMARY KEY (stage_id, track_id)
+);
+
+CREATE TABLE stage_links (      -- the series' default dependency pattern, applied when tasks are created
+  from_stage_id TEXT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
+  to_stage_id   TEXT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
+  lag_days      INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (from_stage_id, to_stage_id)
 );
 
 CREATE TABLE books (
@@ -552,7 +597,14 @@ CREATE TABLE books (
   batch         INTEGER,
   sort_order    INTEGER NOT NULL,
   version       INTEGER NOT NULL DEFAULT 1,
+  archived_at   TEXT,                       -- set instead of deleting once work has started
   UNIQUE (series_id, code)
+);
+
+CREATE TABLE book_stage_skips (  -- stages a book deliberately does not have
+  book_id       TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  stage_id      TEXT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
+  PRIMARY KEY (book_id, stage_id)
 );
 
 -- People, membership and invites -------------------------------------
@@ -721,7 +773,7 @@ CREATE TABLE activity_log (
   series_id     TEXT REFERENCES series(id), -- scopes the change feed; null for global changes
   actor_id      TEXT REFERENCES people(id),
   entity        TEXT NOT NULL CHECK (entity IN (
-                  'series','template','track','stage','book','task','dependency',
+                  'series','template','track','stage','stage_link','skip','book','task','dependency',
                   'window','holiday','member','person','invite','review',
                   'approval','print_record','comment','baseline')),
   entity_id     TEXT NOT NULL,
@@ -783,10 +835,10 @@ Pages load their data through SvelteKit load functions; every write goes through
 | `POST /api/people/:id/password-reset` | none | Reset link emailed to that person | Admin |
 | `PATCH /api/people/:id` | Any of `displayName, active` | Updated person; deactivation ends their sessions | Admin |
 | `POST /api/series` | `{ name, startDate, targetDate, hardLimitDate?, templateId? }` | New series with tracks, stages, team labels and settings copied from the template | Admin |
-| `PATCH /api/series/:id` | Any of `name, targetDate, hardLimitDate, status, bookGroupLabel, enforceWindows, strictMode, defaultCopies, legalDepositCopies, printBufferDays, windowOverflowDays`, preview? | Updated series; existing print records are unchanged. When the change lowers `windowOverflowDays` or turns enforceWindows on, also the refit report, saved with the series change as one undoable batch; with preview set, the report only | Admin, coordinator |
+| `PATCH /api/series/:id` | Any of `name, targetDate, hardLimitDate, status, bookGroupLabel, enforceWindows, strictMode, defaultCopies, legalDepositCopies, printBufferDays`, windowOverflowDays, preview? | Updated series; existing print records are unchanged. When the change lowers windowOverflowDays or turns enforceWindows on, also the refit report, saved with the series change as one undoable batch; with preview set, the report only | Admin, coordinator |
 | `POST /api/series/:id/print-defaults/apply` | `{ fields: ["copiesPlanned", "depositCopies"] }` | Print records updated to the series defaults for every book whose printing has not started, plus the books skipped; one batch id | Admin, coordinator |
 | `POST /api/series/:id/template` | `{ name, description }` | Template saved from this series' pipeline | Admin, coordinator |
-| `POST`, `PATCH`, `DELETE /api/series/:id/tracks`, `/stages`, `/books` | Definitions | Updated pipeline; tasks created or removed for affected books | Admin, coordinator |
+| `PATCH /api/tracks/:id`, `PATCH /api/stages/:id`, `PATCH /api/books/:id` | The editable fields listed under Pipeline changes, plus `version` and `preview?` | Updated track, stage or book; changing ignoresWindows or a deadline rule also returns the refit report. Structural changes use the endpoints listed under Pipeline changes | Admin, coordinator |
 | `PUT /api/series/:id/members/:personId` | `{ role, teamLabel, capacity }` | Membership | Admin, coordinator |
 | `POST /api/series/:id/windows`, `PATCH /api/windows/:id` | `{ label, startDate, endDate, preview? }` | Window, plus every task moved, re-placed, flagged Outside window or made unscheduled, saved as one undoable batch; with preview set, the same report without saving; 422 if it would overlap another window | Admin, coordinator |
 | `DELETE /api/windows/:id` | `{ preview? }` | Removed id, plus the same refit report; started and Done tasks in it keep their dates and lose their window | Admin, coordinator |
