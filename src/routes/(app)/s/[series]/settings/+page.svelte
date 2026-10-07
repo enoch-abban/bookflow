@@ -153,6 +153,45 @@
 		save({ ...print }, (f) => (printFlash = f), () => (print = printFromServer()));
 	}
 
+	// "Apply to all books": the series defaults into every print record whose printing has not started.
+	type ApplyReport = {
+		defaults: { copiesPlanned: number; depositCopies: number };
+		updated: { code: string }[]; skipped: { code: string; reason: string }[]; unchanged: string[];
+		batchId?: string;
+	};
+	let applyPreview = $state<ApplyReport | null>(null);
+	let lastApplyBatch = $state<string | null>(null);
+	const applyBody = { fields: ['copiesPlanned', 'depositCopies'] };
+
+	async function previewApply() {
+		busy = true;
+		printFlash = null;
+		const res = await api<ApplyReport>('POST', `/api/series/${data.series.id}/print-defaults/apply`, { ...applyBody, preview: true });
+		busy = false;
+		if (!res.ok) return (printFlash = { ok: false, text: res.message });
+		applyPreview = res.data;
+	}
+	async function confirmApply() {
+		busy = true;
+		const res = await api<ApplyReport>('POST', `/api/series/${data.series.id}/print-defaults/apply`, applyBody);
+		busy = false;
+		applyPreview = null;
+		if (!res.ok) return (printFlash = { ok: false, text: res.message });
+		lastApplyBatch = res.data.updated.length ? (res.data.batchId ?? null) : null;
+		printFlash = {
+			ok: true,
+			text: `Updated ${plural(res.data.updated.length, 'book', 'books')}${res.data.skipped.length ? `; skipped ${res.data.skipped.map((s) => s.code).join(', ')} (printing has started)` : ''}.`
+		};
+	}
+	async function undoApply() {
+		if (!lastApplyBatch) return;
+		busy = true;
+		const res = await api('POST', '/api/undo', { batchId: lastApplyBatch, seriesId: data.series.id });
+		busy = false;
+		lastApplyBatch = null;
+		printFlash = res.ok ? { ok: true, text: 'Undone.' } : { ok: false, text: res.message };
+	}
+
 	// ── Windows ─────────────────────────────────────────────────────────────
 	// Every change is previewed first when windows are enforced, since it can move tasks.
 	type WinCall = { method: string; url: string; body: Record<string, unknown>; okText: string };
@@ -816,8 +855,26 @@
 				</label>
 			</div>
 			<p class="hint">Each book prints {print.defaultCopies + print.legalDepositCopies} copies ({print.defaultCopies} planned + {print.legalDepositCopies} for legal deposit).</p>
+			{#if applyPreview}
+				{@const ap = applyPreview}
+				<div class="impact" role="alertdialog" aria-label="Confirm applying print defaults">
+					<p>
+						<strong>Apply {ap.defaults.copiesPlanned} + {ap.defaults.depositCopies} copies to every book whose printing has not started.</strong>
+						{#if ap.updated.length}Updates {ap.updated.map((u) => u.code).join(', ')}.{:else}No book needs changing.{/if}
+						{#if ap.skipped.length}Skips {ap.skipped.map((s) => s.code).join(', ')} (printing has started).{/if}
+					</p>
+					<div class="form-foot">
+						<button type="button" class="btn btn-ghost btn-lg" onclick={() => (applyPreview = null)}>Cancel</button>
+						<button type="button" class="btn btn-primary btn-lg" disabled={busy || !ap.updated.length} onclick={confirmApply}>Apply</button>
+					</div>
+				</div>
+			{/if}
 			<div class="form-foot">
 				{#if printFlash}<p class="notice" class:notice--ok={printFlash.ok} class:notice--error={!printFlash.ok} role="status">{printFlash.text}</p>{/if}
+				{#if lastApplyBatch}<button type="button" class="btn btn-ghost btn-lg" disabled={busy} onclick={undoApply}>Undo</button>{/if}
+				<button type="button" class="btn btn-ghost btn-lg" disabled={busy || printDirty || !!applyPreview}
+					title={printDirty ? 'Save the new defaults first' : 'Copy these defaults into books already planned'}
+					onclick={previewApply}>Apply to all books</button>
 				<button class="btn btn-primary btn-lg" disabled={busy || !printDirty}>Save changes</button>
 			</div>
 		</form>

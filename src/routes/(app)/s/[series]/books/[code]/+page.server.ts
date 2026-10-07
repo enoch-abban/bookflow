@@ -8,6 +8,7 @@ import {
 } from '#lib/server/db/schema.ts';
 import { requireMember } from '#lib/server/api-auth.ts';
 import { workingDaysBetween } from '#lib/schedule/calendar.ts';
+import { recordAccess } from '#lib/server/print-records.ts';
 
 // Book detail (spec: Book detail): ISBN and edition, the pipeline as a stepper, every task
 // with dates and variance from the latest baseline, review history, comments, and the
@@ -80,6 +81,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 	const binding = taskList.find((t) => t.stageKey === 'binding');
 	const deposit = taskList.find((t) => t.stageKey === 'legal_deposit');
 	const isCoord = me.isAdmin || me.role === 'coordinator';
+	const access = await recordAccess(locals, book);
 
 	return {
 		series: { id: ser.id, name: ser.name, bookGroupLabel: ser.bookGroupLabel, targetDate: ser.targetDate, hardLimitDate: ser.hardLimitDate },
@@ -97,5 +99,6 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		})),
 		comments: comments.map((c) => ({ id: c.c.id, stage: stageOf.get(c.c.taskId)?.name ?? '', author: c.name, body: c.c.body, at: c.c.createdAt })),
 		canEdit: isCoord,
+		canEditRecord: access.production && !book.archivedAt,
 	};
 };

@@ -133,6 +133,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		if (current && current.version !== 1) conflicting.push(entry.entityId);
 	}
 
+	// Print records the batch changed (Apply to all books) must still be at the version it left.
+	const recordEntries = entries.filter(e => e.entity === 'print_record' && e.beforeJson && e.afterJson);
+	for (const entry of recordEntries) {
+		const after = JSON.parse(entry.afterJson!);
+		const current = await db.select({ version: printRecords.version }).from(printRecords).where(eq(printRecords.bookId, entry.entityId)).then(r => r[0]);
+		if (current && current.version !== after.version) bookConflicts.push('a print record changed since');
+	}
+
 	// A stage the batch added can go only if it has no tasks the batch did not create;
 	// a track the batch created, only while no book follows it.
 	const stageCreates = entries.filter(e => e.entity === 'stage' && e.action === 'create');
@@ -286,6 +294,15 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			const skip = JSON.parse(entry.afterJson!);
 			await tx.delete(bookStageSkips).where(and(eq(bookStageSkips.bookId, skip.bookId), eq(bookStageSkips.stageId, skip.stageId)));
 			await logRow('skip', entry.entityId, skip, null);
+		}
+
+		for (const entry of recordEntries) {
+			const before = JSON.parse(entry.beforeJson!);
+			const current = await tx.select().from(printRecords).where(eq(printRecords.bookId, entry.entityId)).then(r => r[0]);
+			if (!current) continue;
+			const fields = Object.fromEntries(Object.entries(before).filter(([k]) => k !== 'version'));
+			await tx.update(printRecords).set({ ...fields, version: current.version + 1, updatedAt: now }).where(eq(printRecords.bookId, entry.entityId));
+			await tx.insert(activityLog).values({ id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'print_record', entityId: entry.entityId, action: 'undo', beforeJson: entry.afterJson, afterJson: JSON.stringify(fields), batchId: undoBatch, createdAt: now });
 		}
 
 		// Stages and tracks the batch added go once their tasks have; deleted tracks come back.

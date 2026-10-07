@@ -47,6 +47,53 @@
 		await invalidateAll();
 	}
 
+	// ── Print record (Production Unit and coordinators) ─────────────────────
+	type RecordForm = {
+		copiesPlanned: number; depositCopies: number; copiesPrinted: number; printedOn: string;
+		sentToBinderOn: string; returnedFromBinderOn: string; copiesBound: number; depositSubmittedOn: string;
+		binderName: string; binderContact: string; notes: string;
+	};
+	let editingRecord = $state(false);
+	let rec = $state<RecordForm | null>(null);
+	let recMessage = $state<{ ok: boolean; text: string } | null>(null);
+
+	function startRecord() {
+		const r = data.printRecord!;
+		rec = {
+			copiesPlanned: r.copiesPlanned, depositCopies: r.depositCopies, copiesPrinted: r.copiesPrinted,
+			printedOn: r.printedOn ?? '', sentToBinderOn: r.sentToBinderOn ?? '', returnedFromBinderOn: r.returnedFromBinderOn ?? '',
+			copiesBound: r.copiesBound, depositSubmittedOn: r.depositSubmittedOn ?? '',
+			binderName: r.binderName ?? '', binderContact: r.binderContact ?? '', notes: r.notes ?? ''
+		};
+		recMessage = null;
+		editingRecord = true;
+	}
+
+	async function saveRecord(e: SubmitEvent) {
+		e.preventDefault();
+		if (!rec) return;
+		busy = true;
+		const dateOrNull = (v: string) => v || null;
+		const res = await api('PATCH', `/api/books/${data.book.id}/print-record`, {
+			...(data.canEdit ? { copiesPlanned: Number(rec.copiesPlanned), depositCopies: Number(rec.depositCopies) } : {}),
+			copiesPrinted: Number(rec.copiesPrinted), printedOn: dateOrNull(rec.printedOn),
+			sentToBinderOn: dateOrNull(rec.sentToBinderOn), returnedFromBinderOn: dateOrNull(rec.returnedFromBinderOn),
+			copiesBound: Number(rec.copiesBound), depositSubmittedOn: dateOrNull(rec.depositSubmittedOn),
+			binderName: rec.binderName, binderContact: rec.binderContact, notes: rec.notes,
+			version: data.printRecord!.version
+		});
+		busy = false;
+		if (!res.ok) {
+			return (recMessage = {
+				ok: false,
+				text: res.body?.error === 'version_conflict' ? 'Someone else updated this record. Reload the page and try again.' : res.message
+			});
+		}
+		editingRecord = false;
+		recMessage = { ok: true, text: 'Print record saved.' };
+		await invalidateAll();
+	}
+
 	// ── Print approval (coordinators) ───────────────────────────────────────
 	let approvalNote = $state('');
 	let approvalMessage = $state<{ ok: boolean; text: string } | null>(null);
@@ -237,8 +284,39 @@
 					{/if}
 				</div>
 			{/if}
-			{#if data.printRecord}
+			{#if editingRecord && rec}
+				<form class="record-form" onsubmit={saveRecord}>
+					{#if data.canEdit}
+						<div class="rf-row">
+							<label class="field"><span>Copies planned</span><input class="input" type="number" min="0" bind:value={rec.copiesPlanned} /></label>
+							<label class="field"><span>Legal deposit copies</span><input class="input" type="number" min="0" bind:value={rec.depositCopies} /></label>
+						</div>
+					{/if}
+					<div class="rf-row">
+						<label class="field"><span>Copies printed</span><input class="input" type="number" min="0" bind:value={rec.copiesPrinted} /></label>
+						<label class="field"><span>Printed on</span><input class="input" type="date" bind:value={rec.printedOn} /></label>
+					</div>
+					<div class="rf-row">
+						<label class="field"><span>Sent to binder</span><input class="input" type="date" bind:value={rec.sentToBinderOn} /></label>
+						<label class="field"><span>Back from binder</span><input class="input" type="date" bind:value={rec.returnedFromBinderOn} min={rec.sentToBinderOn || undefined} /></label>
+					</div>
+					<div class="rf-row">
+						<label class="field"><span>Binder</span><input class="input" bind:value={rec.binderName} maxlength="120" /></label>
+						<label class="field"><span>Binder contact</span><input class="input" bind:value={rec.binderContact} maxlength="200" /></label>
+					</div>
+					<div class="rf-row">
+						<label class="field"><span>Copies bound <span class="hint">of {Number(rec.copiesPlanned) + Number(rec.depositCopies)}</span></span><input class="input" type="number" min="0" max={rec.copiesPrinted} bind:value={rec.copiesBound} /></label>
+						<label class="field"><span>Deposit submitted</span><input class="input" type="date" bind:value={rec.depositSubmittedOn} /></label>
+					</div>
+					<label class="field"><span>Notes</span><textarea class="input" rows="2" bind:value={rec.notes} maxlength="2000"></textarea></label>
+					<div class="actions">
+						<button type="button" class="btn btn-ghost btn-lg" onclick={() => (editingRecord = false)}>Cancel</button>
+						<button class="btn btn-primary btn-lg" disabled={busy}>Save record</button>
+					</div>
+				</form>
+			{:else if data.printRecord}
 				{@const r = data.printRecord}
+				{#if data.canEditRecord}<button class="link link--block" onclick={startRecord}>Update print record</button>{/if}
 				<dl class="record">
 					<div><dt>Copies planned</dt><dd>{r.copiesPlanned} + {r.depositCopies} for legal deposit</dd></div>
 					<div><dt>Printed</dt><dd>{r.copiesPrinted}{#if r.printedOn} on {fmtDate(r.printedOn)}{/if}</dd></div>
@@ -251,6 +329,7 @@
 			{:else}
 				<p class="muted">No print record.</p>
 			{/if}
+			{#if recMessage}<p class="notice" class:notice--ok={recMessage.ok} class:notice--error={!recMessage.ok} role="status">{recMessage.text}</p>{/if}
 		</section>
 
 		<!-- Review history and comments -->
@@ -344,6 +423,9 @@
 
 	.link { background: none; border: none; padding: 0; margin-left: var(--sp-2); color: var(--primary); font-size: 12px; }
 	.link:hover { text-decoration: underline; }
+	.link--block { margin: 0; align-self: flex-start; font-size: 13px; }
+	.record-form { display: flex; flex-direction: column; gap: var(--sp-3); }
+	.rf-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3); }
 	.pub-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--sp-3); }
 	.field-error { font-size: 12px; color: var(--danger); }
 	.actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--sp-2); }

@@ -163,3 +163,25 @@ export const publishingSchema = z.object({
 });
 
 export const approvePrintSchema = z.object({ note: z.string().trim().max(500).nullable().optional() });
+
+const count = z.number().int('Use whole copies.').min(0, 'Copies cannot be negative.').max(100000);
+const optionalDate = isoDate.nullable().optional();
+export const printRecordSchema = z.object({
+	copiesPlanned: count.optional(),
+	depositCopies: count.optional(),
+	copiesPrinted: count.optional(),
+	printedOn: optionalDate,
+	sentToBinderOn: optionalDate,
+	returnedFromBinderOn: optionalDate,
+	copiesBound: count.optional(),
+	depositSubmittedOn: optionalDate,
+	binderName: z.string().trim().max(120).nullable().optional().transform((v) => (v === undefined ? undefined : v || null)),
+	binderContact: z.string().trim().max(200).nullable().optional().transform((v) => (v === undefined ? undefined : v || null)),
+	notes: z.string().trim().max(2000).nullable().optional().transform((v) => (v === undefined ? undefined : v || null)),
+	version: z.number().int()
+});
+
+export const applyDefaultsSchema = z.object({
+	fields: z.array(z.enum(['copiesPlanned', 'depositCopies'])).min(1, 'Choose what to apply.'),
+	preview: z.boolean().optional()
+});
