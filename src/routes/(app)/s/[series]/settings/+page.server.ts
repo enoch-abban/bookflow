@@ -1,8 +1,8 @@
 import type { PageServerLoad } from './$types';
 import { error } from '@sveltejs/kit';
-import { asc, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '#lib/server/db/index.ts';
-import { invites, people, series, seriesMembers } from '#lib/server/db/schema.ts';
+import { books, invites, people, series, seriesMembers, tasks, windows } from '#lib/server/db/schema.ts';
 import { requireCoord } from '#lib/server/api-auth.ts';
 import { inviteState } from '#lib/server/invites.ts';
 
@@ -48,12 +48,30 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		.orderBy(asc(people.displayName))
 		.then((rows) => rows.filter((p) => !memberIds.includes(p.id)));
 
+	const windowRows = await db.select().from(windows).where(eq(windows.seriesId, ser.id)).orderBy(asc(windows.startDate));
+	const taskCounts = await db
+		.select({ windowId: tasks.windowId, n: count() })
+		.from(tasks)
+		.innerJoin(books, eq(books.id, tasks.bookId))
+		.where(eq(books.seriesId, ser.id))
+		.groupBy(tasks.windowId);
+	const countBy = new Map(taskCounts.map((c) => [c.windowId, c.n]));
+	const windowList = windowRows.map((w) => ({ ...w, taskCount: countBy.get(w.id) ?? 0 }));
+	const unscheduled = await db
+		.select({ n: count() })
+		.from(tasks)
+		.innerJoin(books, eq(books.id, tasks.bookId))
+		.where(and(eq(books.seriesId, ser.id), eq(tasks.scheduleState, 'unscheduled')))
+		.then((r) => r[0]?.n ?? 0);
+
 	const teamLabels = [...new Set(members.map((m) => m.teamLabel).filter((l): l is string => !!l))].sort();
 
 	return {
 		series: ser,
 		members,
 		others,
+		windows: windowList,
+		unscheduled,
 		teamLabels,
 		me: { personId: me.personId, isAdmin: me.isAdmin }
 	};

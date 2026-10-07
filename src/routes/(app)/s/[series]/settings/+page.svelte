@@ -153,6 +153,81 @@
 		save({ ...print }, (f) => (printFlash = f), () => (print = printFromServer()));
 	}
 
+	// ── Windows ─────────────────────────────────────────────────────────────
+	// Every change is previewed first when windows are enforced, since it can move tasks.
+	type WinCall = { method: string; url: string; body: Record<string, unknown>; okText: string };
+	let winPending = $state<(WinCall & { report: Report }) | null>(null);
+	let winFlash = $state<Flash>(null);
+	let lastWinBatch = $state<string | null>(null);
+	let editingWin = $state<{ id: string; label: string; startDate: string; endDate: string } | null>(null);
+	let newWin = $state({ label: '', startDate: '', endDate: '' });
+
+	const DAY_MS = 86_400_000;
+	function workingDays(start: string, end: string) {
+		const from = Date.parse(start + 'T12:00:00Z');
+		const to = Date.parse(end + 'T12:00:00Z');
+		let n = 0;
+		for (let t = from; t <= to; t += DAY_MS) {
+			const dow = new Date(t).getUTCDay();
+			if (dow !== 0 && dow !== 6) n++;
+		}
+		return n;
+	}
+
+	async function windowCall(call: WinCall) {
+		winFlash = null;
+		if (data.series.enforceWindows) {
+			busy = true;
+			const res = await api<SaveResult>(call.method, call.url, { ...call.body, preview: true });
+			busy = false;
+			if (!res.ok) return (winFlash = { ok: false, text: res.message });
+			if (impactful(res.data.report)) return (winPending = { ...call, report: res.data.report });
+		}
+		await commitWindow(call, null);
+	}
+
+	async function commitWindow(call: WinCall, previewed: Report | null) {
+		winPending = null;
+		busy = true;
+		const res = await api<SaveResult>(call.method, call.url, call.body);
+		busy = false;
+		if (!res.ok) return (winFlash = { ok: false, text: res.message });
+		editingWin = null;
+		const applied = res.data.report;
+		lastWinBatch = res.data.batchId ?? null;
+		winFlash = {
+			ok: true,
+			text: !impactful(applied) ? call.okText
+				: previewed && !sameImpact(previewed, applied)
+					? `${call.okText} The schedule changed after the preview. Applied: ${summary(applied)}.`
+					: `${call.okText} ${summary(applied)}.`
+		};
+		await invalidateAll();
+	}
+
+	async function undoWindow() {
+		if (!lastWinBatch) return;
+		busy = true;
+		const res = await api('POST', '/api/undo', { batchId: lastWinBatch, seriesId: data.series.id });
+		busy = false;
+		lastWinBatch = null;
+		winFlash = res.ok ? { ok: true, text: 'Undone.' } : { ok: false, text: res.message };
+		if (res.ok) await invalidateAll();
+	}
+
+	function addWindow(e: SubmitEvent) {
+		e.preventDefault();
+		windowCall({ method: 'POST', url: `/api/series/${data.series.id}/windows`, body: { ...newWin, label: newWin.label.trim() }, okText: `Added "${newWin.label.trim()}".` })
+			.then(() => { if (winFlash?.ok) newWin = { label: '', startDate: '', endDate: '' }; });
+	}
+
+	function saveWindow(e: SubmitEvent) {
+		e.preventDefault();
+		if (!editingWin) return;
+		const { id, ...fields } = editingWin;
+		windowCall({ method: 'PATCH', url: `/api/windows/${id}`, body: { ...fields, label: fields.label.trim() }, okText: 'Window updated.' });
+	}
+
 	// ── Team ────────────────────────────────────────────────────────────────
 	type Draft = { role: string; teamLabel: string; capacity: number };
 	const toDraft = (m: Member): Draft => ({ role: m.role, teamLabel: m.teamLabel ?? '', capacity: m.capacity });
@@ -235,6 +310,30 @@
 
 <svelte:head><title>Settings · {data.series.name}</title></svelte:head>
 
+{#snippet impact(report: Report, cancel: () => void, apply: () => void)}
+	<div class="impact" role="alertdialog" aria-label="Confirm schedule changes">
+		<p><strong>This change re-plans the schedule:</strong> {summary(report)}.</p>
+		<ul class="impact-list">
+			{#each report.changes.slice(0, 8) as c (c.id)}
+				<li>
+					{c.label}:
+					{#if c.kind === 'unscheduled'}becomes unscheduled
+					{:else if c.kind === 'window'}{c.from.window ?? 'no window'} → {c.to.window ?? 'no window'}
+					{:else}{fmtDate(c.from.startDate)} → {fmtDate(c.to.startDate)}{c.to.window ? ` (${c.to.window})` : ''}{/if}
+				</li>
+			{/each}
+			{#each report.outsideWindow.slice(0, 4) as o (o.id)}
+				<li class="warn">{o.label}: started, stays put, flagged Outside window</li>
+			{/each}
+		</ul>
+		{#if report.changes.length > 8}<p class="hint">…and {report.changes.length - 8} more.</p>{/if}
+		<div class="form-foot">
+			<button type="button" class="btn btn-ghost btn-lg" onclick={cancel}>Cancel</button>
+			<button type="button" class="btn btn-primary btn-lg" disabled={busy} onclick={apply}>Apply changes</button>
+		</div>
+	</div>
+{/snippet}
+
 <datalist id="team-labels">
 	{#each data.teamLabels as l (l)}<option value={l}></option>{/each}
 </datalist>
@@ -245,6 +344,7 @@
 		<nav class="toc" aria-label="Sections">
 			<a href="#general">General</a>
 			<a href="#print">Print and publishing</a>
+			<a href="#windows">Windows</a>
 			<a href="#team">Team</a>
 		</nav>
 	</header>
@@ -306,28 +406,8 @@
 			</label>
 
 			{#if pending}
-				<div class="impact" role="alertdialog" aria-label="Confirm schedule changes">
-					<p><strong>This change re-plans the schedule:</strong> {summary(pending.report)}.</p>
-					<ul class="impact-list">
-						{#each pending.report.changes.slice(0, 8) as c (c.id)}
-							<li>
-								{c.label}:
-								{#if c.kind === 'unscheduled'}becomes unscheduled
-								{:else if c.kind === 'window'}{c.from.window ?? 'no window'} → {c.to.window ?? 'no window'}
-								{:else}{fmtDate(c.from.startDate)} → {fmtDate(c.to.startDate)}{c.to.window ? ` (${c.to.window})` : ''}{/if}
-							</li>
-						{/each}
-						{#each pending.report.outsideWindow.slice(0, 4) as o (o.id)}
-							<li class="warn">{o.label}: started, stays put, flagged Outside window</li>
-						{/each}
-					</ul>
-					{#if pending.report.changes.length > 8}<p class="hint">…and {pending.report.changes.length - 8} more.</p>{/if}
-					<div class="form-foot">
-						<button type="button" class="btn btn-ghost btn-lg" onclick={() => (pending = null)}>Cancel</button>
-						<button type="button" class="btn btn-primary btn-lg" disabled={busy}
-							onclick={() => pending && commitGeneral(pending.body, pending.report)}>Apply changes</button>
-					</div>
-				</div>
+				{@const p = pending}
+				{@render impact(p.report, () => (pending = null), () => commitGeneral(p.body, p.report))}
 			{/if}
 
 			<div class="form-foot">
@@ -361,6 +441,107 @@
 			<div class="form-foot">
 				{#if printFlash}<p class="notice" class:notice--ok={printFlash.ok} class:notice--error={!printFlash.ok} role="status">{printFlash.text}</p>{/if}
 				<button class="btn btn-primary btn-lg" disabled={busy || !printDirty}>Save changes</button>
+			</div>
+		</form>
+	</section>
+
+	<!-- Windows ─────────────────────────────────────────────────────────── -->
+	<section id="windows" class="card">
+		<h2>Windows</h2>
+		<p class="lede">
+			{#if data.series.enforceWindows}
+				Enforced. Every task belongs to the window it starts in. Changing a window re-plans the tasks it affects; you'll see the impact before anything is saved.
+			{:else}
+				Reference bands only. Changing them moves no tasks.
+			{/if}
+		</p>
+
+		{#if data.unscheduled > 0}
+			<p class="notice notice--error">
+				{plural(data.unscheduled, 'task is', 'tasks are')} unscheduled because no window has room. Extend a window or add one to place them.
+			</p>
+		{/if}
+
+		<div class="table-wrap">
+			<table class="windows">
+				<thead>
+					<tr><th>Label</th><th>Starts</th><th>Ends</th><th class="num">Working days</th><th class="num">Tasks</th><th class="right">Actions</th></tr>
+				</thead>
+				<tbody>
+					{#each data.windows as w (w.id)}
+						{#if editingWin?.id === w.id}
+							<tr class="expand">
+								<td colspan="6">
+									<form class="inline-form" onsubmit={saveWindow}>
+										<label class="field grow">
+											<span>Label</span>
+											<input class="input" bind:value={editingWin.label} maxlength="60" required />
+										</label>
+										<label class="field">
+											<span>Starts</span>
+											<input class="input" type="date" bind:value={editingWin.startDate} required />
+										</label>
+										<label class="field">
+											<span>Ends</span>
+											<input class="input" type="date" bind:value={editingWin.endDate} min={editingWin.startDate} required />
+										</label>
+										<button class="btn btn-primary btn-lg" disabled={busy || !!winPending}>Save</button>
+										<button type="button" class="btn btn-ghost btn-lg" onclick={() => { editingWin = null; winPending = null; }}>Cancel</button>
+									</form>
+								</td>
+							</tr>
+						{:else}
+							<tr>
+								<td class="name">{w.label}</td>
+								<td>{fmtDate(w.startDate)}</td>
+								<td>{fmtDate(w.endDate)}</td>
+								<td class="num">{workingDays(w.startDate, w.endDate)}</td>
+								<td class="num">{w.taskCount}</td>
+								<td class="right">
+									<div class="actions">
+										<button class="btn btn-ghost" disabled={busy}
+											onclick={() => { winPending = null; editingWin = { id: w.id, label: w.label, startDate: w.startDate, endDate: w.endDate }; }}>Edit</button>
+										<button class="btn btn-danger" disabled={busy}
+											onclick={() => windowCall({ method: 'DELETE', url: `/api/windows/${w.id}`, body: {}, okText: `Deleted "${w.label}".` })}>Delete</button>
+									</div>
+								</td>
+							</tr>
+						{/if}
+					{:else}
+						<tr><td colspan="6" class="empty">No windows yet.</td></tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+
+		{#if winPending}
+			{@const p = winPending}
+			{@render impact(p.report, () => (winPending = null), () => commitWindow(p, p.report))}
+		{/if}
+
+		{#if winFlash || lastWinBatch}
+			<div class="form-foot">
+				{#if winFlash}<p class="notice" class:notice--ok={winFlash.ok} class:notice--error={!winFlash.ok} role="status">{winFlash.text}</p>{/if}
+				{#if lastWinBatch}<button type="button" class="btn btn-ghost btn-lg" disabled={busy} onclick={undoWindow}>Undo</button>{/if}
+			</div>
+		{/if}
+
+		<form class="add-member" onsubmit={addWindow}>
+			<h3>Add a window</h3>
+			<div class="add-fields">
+				<label class="field grow">
+					<span>Label</span>
+					<input class="input" bind:value={newWin.label} maxlength="60" placeholder="e.g. Reserve: Dec 16 to 18" required />
+				</label>
+				<label class="field">
+					<span>Starts</span>
+					<input class="input" type="date" bind:value={newWin.startDate} required />
+				</label>
+				<label class="field">
+					<span>Ends</span>
+					<input class="input" type="date" bind:value={newWin.endDate} min={newWin.startDate} required />
+				</label>
+				<button class="btn btn-primary btn-lg" disabled={busy || !!winPending}>Add</button>
 			</div>
 		</form>
 	</section>
@@ -512,6 +693,8 @@
 	.hint { font-size: 12px; color: var(--muted-foreground); }
 
 	.overflow { max-width: 340px; margin-left: 28px; }
+	.empty { text-align: center; color: var(--muted-foreground); padding: var(--sp-6); }
+	.add-member h3 { margin-bottom: var(--sp-1); }
 	.impact { border: 1px solid var(--tertiary); background: var(--tertiary-subtle); color: var(--tertiary-foreground); border-radius: var(--radius); padding: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-2); font-size: 13px; }
 	.impact p { margin: 0; }
 	.impact-list { margin: 0; padding-left: var(--sp-5); display: flex; flex-direction: column; gap: 2px; }

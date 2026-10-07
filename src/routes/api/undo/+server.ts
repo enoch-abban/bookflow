@@ -2,7 +2,7 @@ import type { RequestHandler } from './$types';
 import { json, error } from '@sveltejs/kit';
 import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
-import { activityLog, series, tasks } from '#lib/server/db/schema.ts';
+import { activityLog, series, tasks, windows } from '#lib/server/db/schema.ts';
 import { asc, eq } from 'drizzle-orm';
 import { parseBody, resolvePerson } from '#lib/server/api-auth.ts';
 
@@ -66,15 +66,55 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			if (current[k as keyof typeof current] !== v) seriesConflicts.push(k);
 	}
 
-	if (conflicting.length > 0 || seriesConflicts.length > 0) {
-		return json({ error: 'conflict', taskIds: conflicting, seriesFields: seriesConflicts }, { status: 409 });
+	// Windows changed in the batch must still be as the batch left them.
+	const windowEntries = entries.filter(e => e.entity === 'window');
+	const windowConflicts: string[] = [];
+	for (const entry of windowEntries) {
+		const current = await db.select().from(windows).where(eq(windows.id, entry.entityId)).then(r => r[0] ?? null);
+		const after = entry.afterJson ? JSON.parse(entry.afterJson) as typeof windows.$inferSelect : null;
+		const before = entry.beforeJson ? JSON.parse(entry.beforeJson) as typeof windows.$inferSelect : null;
+		if (after && (!current || current.label !== after.label || current.startDate !== after.startDate || current.endDate !== after.endDate))
+			windowConflicts.push(entry.entityId);
+		if (!after && current) windowConflicts.push(entry.entityId);
+		// A restored or reverted window must not collide with windows added since.
+		if (before) {
+			const others = await db.select().from(windows).where(eq(windows.seriesId, before.seriesId));
+			if (others.some(w => w.id !== before.id && w.startDate <= before.endDate && before.startDate <= w.endDate))
+				windowConflicts.push(entry.entityId);
+		}
+		// A window the batch created can only go if nothing outside the batch has moved into it.
+		if (after && !before) {
+			const users = await db.select({ id: tasks.id }).from(tasks).where(eq(tasks.windowId, after.id));
+			if (users.some(t => !perTask.has(t.id))) windowConflicts.push(entry.entityId);
+		}
+	}
+
+	if (conflicting.length > 0 || seriesConflicts.length > 0 || windowConflicts.length > 0) {
+		return json({ error: 'conflict', taskIds: conflicting, seriesFields: seriesConflicts, windowIds: windowConflicts }, { status: 409 });
 	}
 
 	const now       = new Date().toISOString();
 	const undoBatch = ulid();
 	const restored: Record<string, unknown>[] = [];
 
+	const logWindow = (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], entityId: string, from: unknown, to: unknown) =>
+		tx.insert(activityLog).values({
+			id: ulid(), seriesId: batchSeriesId, actorId: personId,
+			entity: 'window', entityId, action: 'undo',
+			beforeJson: from ? JSON.stringify(from) : null, afterJson: to ? JSON.stringify(to) : null,
+			batchId: undoBatch, createdAt: now,
+		});
+
 	await db.transaction(async tx => {
+		// Windows first (recreate deleted, revert changed), so restored tasks can point at them.
+		for (const entry of windowEntries) {
+			const before = entry.beforeJson ? JSON.parse(entry.beforeJson) : null;
+			const after = entry.afterJson ? JSON.parse(entry.afterJson) : null;
+			if (before && !after) await tx.insert(windows).values(before);
+			if (before && after) await tx.update(windows).set({ label: before.label, startDate: before.startDate, endDate: before.endDate }).where(eq(windows.id, before.id));
+			if (before) await logWindow(tx, entry.entityId, after, before);
+		}
+
 		for (const entry of seriesEntries) {
 			const before = JSON.parse(entry.beforeJson!);
 			const after = JSON.parse(entry.afterJson!);
@@ -114,6 +154,19 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			});
 
 			restored.push({ id: taskId, ...restoreFields });
+		}
+
+		// Windows the batch created go last, once no restored task points at them.
+		for (const entry of windowEntries) {
+			if (entry.beforeJson || !entry.afterJson) continue;
+			await tx.delete(windows).where(eq(windows.id, entry.entityId));
+			await logWindow(tx, entry.entityId, JSON.parse(entry.afterJson), null);
+		}
+
+		// Keep window sort order by date.
+		if (windowEntries.length) {
+			const rows = await tx.select({ id: windows.id }).from(windows).where(eq(windows.seriesId, batchSeriesId)).orderBy(asc(windows.startDate));
+			for (const [i, r] of rows.entries()) await tx.update(windows).set({ sortOrder: i + 1 }).where(eq(windows.id, r.id));
 		}
 	});
 

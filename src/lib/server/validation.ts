@@ -62,3 +62,20 @@ export const memberSchema = z.object({
 	teamLabel: z.string().trim().max(60).nullable().transform((v) => v || null),
 	capacity: z.number().min(0.25, 'Capacity must be at least 0.25.').max(20)
 });
+
+const windowFields = {
+	label: z.string().trim().min(1, 'Enter a label for the window.').max(60),
+	startDate: isoDate,
+	endDate: isoDate
+};
+const endAfterStart = (w: { startDate?: string; endDate?: string }) => !w.startDate || !w.endDate || w.endDate >= w.startDate;
+
+export const createWindowSchema = z
+	.object({ ...windowFields, preview: z.boolean().optional() })
+	.refine(endAfterStart, 'The window cannot end before it starts.');
+
+export const updateWindowSchema = z
+	.object({ ...windowFields, preview: z.boolean().optional() })
+	.partial()
+	.refine((b) => Object.keys(b).some((k) => k !== 'preview'), 'Nothing to update.')
+	.refine(endAfterStart, 'The window cannot end before it starts.');
