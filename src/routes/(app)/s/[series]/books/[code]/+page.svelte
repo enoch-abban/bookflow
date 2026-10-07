@@ -1,7 +1,72 @@
 <script lang="ts">
+	import { invalidateAll } from '$app/navigation';
+	import { api } from '#lib/api-client.ts';
+	import { isValidIsbn13 } from '#lib/isbn.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
+
+	// ── Publishing: ISBN and edition (coordinators) ─────────────────────────
+	let editingPub = $state(false);
+	let pub = $state({ isbn: '', edition: '' });
+	let pubMessage = $state<{ ok: boolean; text: string } | null>(null);
+	let confirmIsbn = $state<string | null>(null);
+	let busy = $state(false);
+	const isbnLooksWrong = $derived(!!pub.isbn.trim() && !isValidIsbn13(pub.isbn));
+
+	function startPub() {
+		pub = { isbn: data.book.isbn ?? '', edition: data.book.edition ?? '' };
+		pubMessage = null;
+		confirmIsbn = null;
+		editingPub = true;
+	}
+
+	async function savePub(confirmChange = false) {
+		busy = true;
+		pubMessage = null;
+		const res = await api<{ approvalWithdrawn: boolean }>('PATCH', `/api/books/${data.book.id}/publishing`, {
+			isbn: pub.isbn.trim() || null, edition: pub.edition.trim() || null, version: data.book.version,
+			...(confirmChange ? { confirmChange: true } : {})
+		});
+		busy = false;
+		if (!res.ok) {
+			if (res.body?.error === 'confirm_required') return (confirmIsbn = res.message);
+			if (res.body?.error === 'version_conflict') return (pubMessage = { ok: false, text: 'Someone else changed this book. Reload the page and try again.' });
+			return (pubMessage = { ok: false, text: res.message });
+		}
+		confirmIsbn = null;
+		editingPub = false;
+		approvalMessage = null; // an older "Approved" message would contradict a withdrawal
+		blockers = [];
+		pubMessage = {
+			ok: true,
+			text: res.data.approvalWithdrawn
+				? 'Saved. The print approval was withdrawn and the gate reset; approve again once the new ISBN is in the files.'
+				: 'Saved.'
+		};
+		await invalidateAll();
+	}
+
+	// ── Print approval (coordinators) ───────────────────────────────────────
+	let approvalNote = $state('');
+	let approvalMessage = $state<{ ok: boolean; text: string } | null>(null);
+	let blockers = $state<{ stage: string; status: string }[]>([]);
+
+	async function approve(e: SubmitEvent) {
+		e.preventDefault();
+		busy = true;
+		approvalMessage = null;
+		blockers = [];
+		const res = await api('POST', `/api/books/${data.book.id}/approve-print`, { note: approvalNote.trim() || null });
+		busy = false;
+		if (!res.ok) {
+			blockers = (res.body?.unfinished as { stage: string; status: string }[] | undefined) ?? [];
+			return (approvalMessage = { ok: false, text: res.message });
+		}
+		approvalNote = '';
+		approvalMessage = { ok: true, text: 'Approved for print.' };
+		await invalidateAll();
+	}
 
 	const STATUS_LABEL: Record<string, string> = {
 		not_started: 'Not started', in_progress: 'In progress', in_review: 'In review',
@@ -43,12 +108,48 @@
 			</p>
 		</div>
 		<dl class="facts">
-			<div><dt>ISBN</dt><dd>{isbnShown ?? 'Not issued yet'}</dd></div>
+			<div>
+				<dt>ISBN {#if data.canEdit && !data.book.archivedAt && !editingPub}<button class="link" onclick={startPub}>{data.book.isbn ? 'Change' : 'Record'}</button>{/if}</dt>
+				<dd>{isbnShown ?? 'Not issued yet'}</dd>
+			</div>
 			<div><dt>Edition</dt><dd>{data.book.edition ?? '–'}</dd></div>
 			<div><dt>Projected finish</dt><dd>{fmtDate(data.projectedFinish)}{#if data.projectedFinish && data.series.hardLimitDate && data.projectedFinish > data.series.hardLimitDate}<span class="flag">past hard limit</span>{:else if data.projectedFinish && data.projectedFinish > data.series.targetDate}<span class="flag flag--warn">behind target</span>{/if}</dd></div>
 			<div><dt>Legal deposit due</dt><dd>{fmtDate(data.depositDue)}</dd></div>
 		</dl>
 	</header>
+
+	{#if editingPub}
+		<form class="card pub-form" onsubmit={(e) => { e.preventDefault(); savePub(); }}>
+			<h2>ISBN and edition</h2>
+			<div class="pub-fields">
+				<label class="field">
+					<span>ISBN-13 <span class="hint">as issued by the agency; hyphens are fine</span></span>
+					<input class="input" bind:value={pub.isbn} inputmode="numeric" maxlength="32" placeholder="978…" aria-invalid={isbnLooksWrong} />
+					{#if isbnLooksWrong}<span class="field-error">Not a valid ISBN-13 yet: check the digits and the check digit.</span>{/if}
+				</label>
+				<label class="field">
+					<span>Edition</span>
+					<input class="input" bind:value={pub.edition} maxlength="80" placeholder="1st edition, 2026" />
+				</label>
+			</div>
+			{#if confirmIsbn}
+				<div class="confirm" role="alertdialog" aria-label="Confirm ISBN change">
+					<p>{confirmIsbn}</p>
+					<div class="actions">
+						<button type="button" class="btn btn-ghost btn-lg" onclick={() => (confirmIsbn = null)}>Keep the current ISBN</button>
+						<button type="button" class="btn btn-danger btn-lg" disabled={busy} onclick={() => savePub(true)}>Change ISBN</button>
+					</div>
+				</div>
+			{:else}
+				<div class="actions">
+					<button type="button" class="btn btn-ghost btn-lg" onclick={() => (editingPub = false)}>Cancel</button>
+					<button class="btn btn-primary btn-lg" disabled={busy || isbnLooksWrong}>Save</button>
+				</div>
+			{/if}
+			{#if pubMessage && !pubMessage.ok}<p class="notice notice--error" role="alert">{pubMessage.text}</p>{/if}
+		</form>
+	{/if}
+	{#if pubMessage?.ok}<p class="notice notice--ok" role="status">{pubMessage.text}</p>{/if}
 
 	<!-- Pipeline stepper -->
 	<section class="card">
@@ -118,6 +219,23 @@
 				<p class="approval approval--ok">Approved for print by <strong>{data.approval.by}</strong> on {fmtDateTime(data.approval.at)}.{#if data.approval.note} “{data.approval.note}”{/if}</p>
 			{:else}
 				<p class="approval">Not approved for print yet. Approval opens once every earlier task is Done, including the ISBN.</p>
+				{#if data.canEdit && !data.book.archivedAt}
+					<form class="approve" onsubmit={approve}>
+						<label class="field">
+							<span>Note <span class="hint">optional</span></span>
+							<input class="input" bind:value={approvalNote} maxlength="500" placeholder="e.g. Final PDF checked against the cover" />
+						</label>
+						<button class="btn btn-primary btn-lg" disabled={busy}>Approve for print</button>
+					</form>
+				{/if}
+			{/if}
+			{#if approvalMessage}
+				<div class="notice" class:notice--ok={approvalMessage.ok} class:notice--error={!approvalMessage.ok} role="status">
+					{approvalMessage.text}
+					{#if blockers.length}
+						<ul class="blockers">{#each blockers as b (b.stage)}<li>{b.stage}: {STATUS_LABEL[b.status] ?? b.status}</li>{/each}</ul>
+					{/if}
+				</div>
 			{/if}
 			{#if data.printRecord}
 				{@const r = data.printRecord}
@@ -224,6 +342,16 @@
 	.status[data-status='done'] { background: var(--success-subtle); color: var(--success); }
 	.status[data-status='blocked'] { background: var(--danger-subtle); color: var(--danger); }
 
+	.link { background: none; border: none; padding: 0; margin-left: var(--sp-2); color: var(--primary); font-size: 12px; }
+	.link:hover { text-decoration: underline; }
+	.pub-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--sp-3); }
+	.field-error { font-size: 12px; color: var(--danger); }
+	.actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--sp-2); }
+	.confirm { border: 1px solid var(--tertiary); background: var(--tertiary-subtle); color: var(--tertiary-foreground); border-radius: var(--radius-sm); padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }
+	.confirm p { margin: 0; }
+	.approve { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-2); }
+	.approve .field { flex: 1 1 220px; }
+	.blockers { margin: var(--sp-1) 0 0; padding-left: var(--sp-5); }
 	.approval { margin: 0; padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-sm); background: var(--muted); font-size: 13px; }
 	.approval--ok { background: var(--success-subtle); color: var(--success); }
 	.record { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2) var(--sp-4); margin: 0; }

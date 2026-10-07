@@ -9,7 +9,8 @@ import {
 	people,
 } from '#lib/server/db/schema.ts';
 import { eq, and, ne, asc, isNull } from 'drizzle-orm';
-import { fail } from '@sveltejs/kit';
+import { fail, isHttpError } from '@sveltejs/kit';
+import { changeStatus } from '#lib/server/task-status.ts';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	// Find person record linked to current user
@@ -71,46 +72,25 @@ export const load: PageServerLoad = async ({ locals }) => {
 	};
 };
 
+// The status buttons share the API's rules: only assignees or a coordinator, allowed
+// transitions only, gate and ISBN guards, version bump and activity log.
+function statusAction(to: 'in_progress' | 'in_review' | 'done') {
+	return async ({ request, locals }: Parameters<Actions[string]>[0]) => {
+		if (!locals.user) return fail(401);
+		const taskId = (await request.formData()).get('taskId')?.toString();
+		if (!taskId) return fail(400);
+		try {
+			await changeStatus(locals, taskId, to);
+		} catch (err) {
+			if (isHttpError(err)) return fail(err.status, { taskId, message: err.body.message });
+			throw err;
+		}
+	};
+}
+
 export const actions: Actions = {
-	start: async ({ request, locals }) => {
-		if (!locals.user) return fail(401);
-		const fd = await request.formData();
-		const taskId = fd.get('taskId') as string;
-		if (!taskId) return fail(400);
-		await db
-			.update(tasks)
-			.set({ status: 'in_progress', updatedAt: new Date().toISOString() })
-			.where(eq(tasks.id, taskId));
-	},
-	submit: async ({ request, locals }) => {
-		if (!locals.user) return fail(401);
-		const fd = await request.formData();
-		const taskId = fd.get('taskId') as string;
-		if (!taskId) return fail(400);
-		await db
-			.update(tasks)
-			.set({ status: 'in_review', updatedAt: new Date().toISOString() })
-			.where(eq(tasks.id, taskId));
-	},
-	done: async ({ request, locals }) => {
-		if (!locals.user) return fail(401);
-		const fd = await request.formData();
-		const taskId = fd.get('taskId') as string;
-		if (!taskId) return fail(400);
-		const now = new Date().toISOString();
-		await db
-			.update(tasks)
-			.set({ status: 'done', completedAt: now, updatedAt: now })
-			.where(eq(tasks.id, taskId));
-	},
-	resume: async ({ request, locals }) => {
-		if (!locals.user) return fail(401);
-		const fd = await request.formData();
-		const taskId = fd.get('taskId') as string;
-		if (!taskId) return fail(400);
-		await db
-			.update(tasks)
-			.set({ status: 'in_progress', updatedAt: new Date().toISOString() })
-			.where(eq(tasks.id, taskId));
-	},
+	start: statusAction('in_progress'),
+	submit: statusAction('in_review'),
+	done: statusAction('done'),
+	resume: statusAction('in_progress'),
 };

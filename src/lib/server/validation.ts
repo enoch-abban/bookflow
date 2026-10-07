@@ -154,3 +154,12 @@ export const createTrackSchema = z.object({
 	name: z.string().trim().min(1, 'Enter a track name.').max(60),
 	stageIds: z.array(z.string())
 });
+
+export const publishingSchema = z.object({
+	isbn: z.string().trim().max(32).nullable().optional(),
+	edition: z.string().trim().max(80).nullable().optional(),
+	version: z.number().int(),
+	confirmChange: z.boolean().optional()
+});
+
+export const approvePrintSchema = z.object({ note: z.string().trim().max(500).nullable().optional() });

@@ -2,7 +2,7 @@
 	import type { PageProps } from './$types';
 	import { enhance } from '$app/forms';
 
-	let { data }: PageProps = $props();
+	let { data, form }: PageProps = $props();
 
 	function fmtDate(d: string): string {
 		const [yr, mm, day] = d.split('-');
@@ -25,6 +25,8 @@
 			<span class="person-name">{data.person.displayName}</span>
 		{/if}
 	</header>
+
+	{#if form?.message}<p class="notice notice--error" role="alert">{form.message}</p>{/if}
 
 	{#if !data.person}
 		<div class="empty-state">

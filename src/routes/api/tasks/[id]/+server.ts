@@ -6,6 +6,7 @@ import { tasks, taskAssignees, dependencies, activityLog, people, seriesMembers 
 import { eq, and } from 'drizzle-orm';
 import { parseBody, versionConflict, loadTaskWithSeries, resolvePerson } from '#lib/server/api-auth.ts';
 import { isAllowedTransition } from '#lib/server/scheduler.ts';
+import { statusGuard, statusUpdates } from '#lib/server/task-status.ts';
 import { loadSeriesContext } from '#lib/server/series-context.ts';
 import { refit } from '#lib/server/refit.ts';
 import { refitChanges, refitReport, writeTaskChanges } from '#lib/server/schedule-write.ts';
@@ -70,24 +71,9 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 		if (!isAllowedTransition(task.status, body.status)) {
 			throw error(422, `Transition ${task.status} → ${body.status} not allowed`);
 		}
-
-		updates.status = body.status;
-
-		if (body.status === 'blocked') {
-			updates.statusBeforeBlock = task.status;
-		} else if (task.status === 'blocked') {
-			// Unblocking: clear the saved state
-			updates.statusBeforeBlock = null;
-			updates.blockedReason     = null;
-		}
-
-		if (body.status === 'done') {
-			updates.completedAt = new Date().toISOString();
-		}
-
-		if (body.status === 'in_progress' && task.status === 'returned') {
-			updates.iteration = (task.iteration ?? 1) + 1;
-		}
+		// Gates complete only through approval; ISBN issued needs an ISBN (shared with My tasks).
+		await statusGuard(task, body.status);
+		Object.assign(updates, statusUpdates(task, body.status, new Date().toISOString()));
 	}
 
 	// Switching overflow off may leave the task past its allowance: refit (spec: Changing windows).
