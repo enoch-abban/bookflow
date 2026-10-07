@@ -128,7 +128,7 @@
 				{#each group.books as book (book.id)}
 					<tr class="book-row">
 						<td class="col-book book-cell">
-							<span class="book-code">{book.code}</span>
+							<a class="book-code" href="/s/{data.series.id}/books/{encodeURIComponent(book.code)}">{book.code}</a>
 							<span class="book-name">{book.name}</span>
 						</td>
 						{#each data.stages as stage (stage.id)}

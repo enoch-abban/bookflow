@@ -33,3 +33,15 @@ export function toWorkingDay(date: string): string {
 export function deriveEnd(start: string, durationDays: number): string {
 	return durationDays === 0 ? start : addWorkingDays(start, durationDays - 1);
 }
+
+/**
+ * Working days from `from` to `to`: positive when `to` is later, negative when earlier,
+ * 0 when they fall on the same working day. Used for baseline variance.
+ */
+export function workingDaysBetween(from: string, to: string): number {
+	if (from === to) return 0;
+	const [a, b, sign] = from < to ? [from, to, 1] : [to, from, -1];
+	let n = 0;
+	for (let d = addWorkingDays(a, 1); d <= b; d = addWorkingDays(d, 1)) n++;
+	return sign * n;
+}

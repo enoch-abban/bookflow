@@ -796,7 +796,11 @@
 				<div class="sl-lane" style="height:{box.height}px">
 					<!-- Sticky label -->
 					<div class="sl-label">
-						<span class="sl-label-code">{lane.label}</span>
+						{#if laneMode === 'book' && !lane.overflow}
+							<a class="sl-label-code" href="/s/{series.id}/books/{encodeURIComponent(lane.label)}">{lane.label}</a>
+						{:else}
+							<span class="sl-label-code">{lane.label}</span>
+						{/if}
 						{#if lane.sublabel && laneMode === 'book'}
 							<span class="sl-label-name">{lane.sublabel}</span>
 						{/if}
