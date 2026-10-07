@@ -2,15 +2,21 @@ import type { RequestHandler } from './$types';
 import { json, error } from '@sveltejs/kit';
 import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
-import { activityLog, series, tasks, windows } from '#lib/server/db/schema.ts';
+import { activityLog, series, stages, tasks, windows } from '#lib/server/db/schema.ts';
 import { asc, eq } from 'drizzle-orm';
 import { parseBody, resolvePerson } from '#lib/server/api-auth.ts';
 
 type Body = { batchId: string; seriesId: string };
 
-const TASK_FIELDS = ['startDate', 'endDate', 'durationDays', 'windowId', 'scheduleState', 'overflowAllowed'] as const;
+const TASK_FIELDS = ['startDate', 'endDate', 'durationDays', 'windowId', 'scheduleState', 'overflowAllowed', 'dueDate'] as const;
 
-// POST /api/undo — reverse one batch: task placements, and series settings changed with them.
+// Settings rows a batch can change alongside its tasks; restored field by field.
+const SETTING_TABLES = { series, stage: stages } as const;
+type SettingEntity = keyof typeof SETTING_TABLES;
+const isSetting = (entity: string): entity is SettingEntity => entity in SETTING_TABLES;
+
+// POST /api/undo — reverse one batch: task placements and due dates, and the series, stage
+// and window settings changed with them.
 export const POST: RequestHandler = async ({ request, locals }) => {
 	const body = await parseBody<Body>(request);
 	if (!body.batchId) throw error(400, 'batchId required');
@@ -55,15 +61,16 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		if (current && current.version !== expectedVersion) conflicting.push(taskId);
 	}
 
-	// Series settings changed in the batch must still hold the values the batch set.
-	const seriesEntries = entries.filter(e => e.entity === 'series' && e.beforeJson && e.afterJson);
+	// Series and stage settings changed in the batch must still hold the values the batch set.
+	const seriesEntries = entries.filter(e => isSetting(e.entity) && e.beforeJson && e.afterJson);
 	const seriesConflicts: string[] = [];
 	for (const entry of seriesEntries) {
+		const table = SETTING_TABLES[entry.entity as SettingEntity];
 		const after = JSON.parse(entry.afterJson!) as Record<string, unknown>;
-		const current = await db.select().from(series).where(eq(series.id, entry.entityId)).then(r => r[0]);
+		const current = await db.select().from(table).where(eq(table.id, entry.entityId)).then(r => r[0] as Record<string, unknown> | undefined);
 		if (!current) continue;
 		for (const [k, v] of Object.entries(after))
-			if (current[k as keyof typeof current] !== v) seriesConflicts.push(k);
+			if (current[k] !== v) seriesConflicts.push(`${entry.entity}.${k}`);
 	}
 
 	// Windows changed in the batch must still be as the batch left them.
@@ -118,10 +125,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		for (const entry of seriesEntries) {
 			const before = JSON.parse(entry.beforeJson!);
 			const after = JSON.parse(entry.afterJson!);
-			await tx.update(series).set(before).where(eq(series.id, entry.entityId));
+			const table = SETTING_TABLES[entry.entity as SettingEntity];
+			await tx.update(table).set(before).where(eq(table.id, entry.entityId));
 			await tx.insert(activityLog).values({
 				id: ulid(), seriesId: batchSeriesId, actorId: personId,
-				entity: 'series', entityId: entry.entityId, action: 'undo',
+				entity: entry.entity as SettingEntity, entityId: entry.entityId, action: 'undo',
 				beforeJson: JSON.stringify(after), afterJson: JSON.stringify(before),
 				batchId: undoBatch, createdAt: now,
 			});

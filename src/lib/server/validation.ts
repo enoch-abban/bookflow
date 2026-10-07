@@ -79,3 +79,43 @@ export const updateWindowSchema = z
 	.partial()
 	.refine((b) => Object.keys(b).some((k) => k !== 'preview'), 'Nothing to update.')
 	.refine(endAfterStart, 'The window cannot end before it starts.');
+
+// ── Pipeline edits (spec: Pipeline changes) ────────────────────────────────
+
+const someField = (b: object) => Object.keys(b).some((k) => k !== 'preview');
+
+export const updateTrackSchema = z.object({ name: z.string().trim().min(1, 'Enter a track name.').max(60) });
+
+export const deadlineRuleSchema = z
+	.object({
+		after: z.string().min(1, 'Choose the stage the deadline counts from.'),
+		months: z.number().int().min(0).max(36).optional(),
+		days: z.number().int().min(0).max(365).optional()
+	})
+	.refine((r) => (r.months ?? 0) + (r.days ?? 0) > 0, 'A deadline needs at least one month or day.');
+
+export const updateStageSchema = z
+	.object({
+		name: z.string().trim().min(1, 'Enter a stage name.').max(60),
+		category: z.enum(['creation', 'review', 'layout', 'publish', 'gate', 'production']),
+		defaultDays: z.number().int().min(0).max(60),
+		isReview: z.boolean(),
+		isExternal: z.boolean(),
+		ignoresWindows: z.boolean(),
+		deadlineRule: deadlineRuleSchema.nullable(),
+		preview: z.boolean()
+	})
+	.partial()
+	.refine(someField, 'Nothing to update.');
+
+export const updateBookSchema = z
+	.object({
+		code: z.string().trim().min(1, 'Enter a book code.').max(20),
+		name: z.string().trim().min(1, 'Enter a book name.').max(120),
+		groupLabel: z.string().trim().max(60).nullable().transform((v) => v || null),
+		batch: z.number().int().min(1).max(99).nullable()
+	})
+	.partial()
+	.refine(someField, 'Nothing to update.');
+
+export const orderSchema = z.object({ ids: z.array(z.string().min(1)).min(1) });

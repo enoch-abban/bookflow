@@ -228,12 +228,165 @@
 		windowCall({ method: 'PATCH', url: `/api/windows/${id}`, body: { ...fields, label: fields.label.trim() }, okText: 'Window updated.' });
 	}
 
+	// ── Pipeline (edits only: nothing here creates or deletes tasks) ─────────
+	type PStage = (typeof data.pipeline.stages)[number];
+	type PBook = (typeof data.pipeline.books)[number];
+	type DueChange = { id: string; label: string; from: string | null; to: string | null };
+	type StageResult = { report: Report | null; dueDates: DueChange[]; batchId?: string };
+
+	const CATEGORIES = ['creation', 'review', 'layout', 'publish', 'gate', 'production'] as const;
+	const CATEGORY_LABEL: Record<string, string> = {
+		creation: 'Creation', review: 'Review', layout: 'Layout', publish: 'Publishing', gate: 'Gate', production: 'Production'
+	};
+
+	let pipeFlash = $state<Flash>(null);
+	let lastPipeBatch = $state<string | null>(null);
+
+	// Track rename
+	let renamingTrack = $state<{ id: string; name: string } | null>(null);
+	async function renameTrack(e: SubmitEvent) {
+		e.preventDefault();
+		if (!renamingTrack) return;
+		const res = await pipeCall('PATCH', `/api/tracks/${renamingTrack.id}`, { name: renamingTrack.name.trim() }, 'Track renamed.');
+		if (res) renamingTrack = null;
+	}
+
+	// Stage drafts: one per stage, edited inline and saved per row.
+	type StageDraft = {
+		name: string; category: string; defaultDays: number; isReview: boolean; isExternal: boolean;
+		ignoresWindows: boolean; deadlineAfter: string; deadlineMonths: number; deadlineDays: number;
+	};
+	function stageDraft(s: PStage): StageDraft {
+		let rule: { after?: string; months?: number; days?: number } = {};
+		try { rule = s.deadlineRule ? JSON.parse(s.deadlineRule) : {}; } catch { /* malformed rule: treat as none */ }
+		return {
+			name: s.name, category: s.category, defaultDays: s.defaultDays, isReview: !!s.isReview, isExternal: !!s.isExternal,
+			ignoresWindows: !!s.ignoresWindows, deadlineAfter: rule.after ?? '', deadlineMonths: rule.months ?? 0, deadlineDays: rule.days ?? 0
+		};
+	}
+	const sameDraft = (a: object, b: object) => JSON.stringify(a) === JSON.stringify(b);
+
+	const bookDraft = (b: PBook) => ({ code: b.code, name: b.name, groupLabel: b.groupLabel ?? '', batch: b.batch });
+	// Built immediately so the tables also render on the server, not only after hydration.
+	const initialStageDrafts = () => Object.fromEntries(data.pipeline.stages.map((s) => [s.id, stageDraft(s)]));
+	const initialBookDrafts = () => Object.fromEntries(data.pipeline.books.map((b) => [b.id, bookDraft(b)]));
+	let stageDrafts = $state<Record<string, StageDraft>>(initialStageDrafts());
+	let bookDrafts = $state<Record<string, ReturnType<typeof bookDraft>>>(initialBookDrafts());
+	// Fresh drafts when the server data changes, keeping rows with unsaved edits (as in Team).
+	const syncedStages: Record<string, StageDraft> = {};
+	const syncedBooks: Record<string, ReturnType<typeof bookDraft>> = {};
+	function merge<T extends object>(current: Record<string, T>, synced: Record<string, T>, fresh: [string, T][]) {
+		const next: Record<string, T> = {};
+		for (const [id, f] of fresh) {
+			const prev = current[id];
+			const old = synced[id];
+			next[id] = !prev || !old || sameDraft(prev, old) ? f : prev;
+			synced[id] = f;
+		}
+		return next;
+	}
+	$effect(() => {
+		const stagesFresh = data.pipeline.stages.map((s): [string, StageDraft] => [s.id, stageDraft(s)]);
+		const booksFresh = data.pipeline.books.map((b): [string, ReturnType<typeof bookDraft>] => [b.id, bookDraft(b)]);
+		untrack(() => {
+			stageDrafts = merge(stageDrafts, syncedStages, stagesFresh);
+			bookDrafts = merge(bookDrafts, syncedBooks, booksFresh);
+		});
+	});
+	const stageDirty = (s: PStage) => !!stageDrafts[s.id] && !sameDraft(stageDrafts[s.id], stageDraft(s));
+	const bookDirty = (b: PBook) => !!bookDrafts[b.id] && !sameDraft(bookDrafts[b.id], bookDraft(b));
+	const groupLabels = $derived([...new Set(data.pipeline.books.map((b) => b.groupLabel).filter((g): g is string => !!g))].sort());
+
+	async function pipeCall(method: string, url: string, body: unknown, okText: string) {
+		busy = true;
+		pipeFlash = null;
+		const res = await api<StageResult>(method, url, body);
+		busy = false;
+		if (!res.ok) {
+			pipeFlash = { ok: false, text: res.message };
+			return null;
+		}
+		pipeFlash = { ok: true, text: okText };
+		await invalidateAll();
+		return res.data;
+	}
+
+	function stageBody(s: PStage) {
+		const d = stageDrafts[s.id];
+		const rule = d.deadlineAfter
+			? { after: d.deadlineAfter, ...(d.deadlineMonths ? { months: Number(d.deadlineMonths) } : {}), ...(d.deadlineDays ? { days: Number(d.deadlineDays) } : {}) }
+			: null;
+		return {
+			name: d.name.trim(), category: d.category, defaultDays: Number(d.defaultDays), isReview: d.isReview,
+			isExternal: d.isExternal, ignoresWindows: d.ignoresWindows, deadlineRule: rule
+		};
+	}
+
+	// Window exemption and deadline changes can move tasks or due dates: preview first.
+	let stagePending = $state<{ stage: PStage; body: ReturnType<typeof stageBody>; result: StageResult } | null>(null);
+
+	async function saveStage(s: PStage) {
+		const body = stageBody(s);
+		const orig = stageDraft(s);
+		const draft = stageDrafts[s.id];
+		const risky = draft.ignoresWindows !== orig.ignoresWindows || draft.deadlineAfter !== orig.deadlineAfter ||
+			draft.deadlineMonths !== orig.deadlineMonths || draft.deadlineDays !== orig.deadlineDays;
+		if (risky) {
+			busy = true;
+			const res = await api<StageResult>('PATCH', `/api/stages/${s.id}`, { ...body, preview: true });
+			busy = false;
+			if (!res.ok) return (pipeFlash = { ok: false, text: res.message });
+			if (impactful(res.data.report) || res.data.dueDates.length) return (stagePending = { stage: s, body, result: res.data });
+		}
+		await commitStage(s, body);
+	}
+
+	async function commitStage(s: PStage, body: ReturnType<typeof stageBody>) {
+		stagePending = null;
+		const result = await pipeCall('PATCH', `/api/stages/${s.id}`, body, `Saved ${body.name}.`);
+		if (!result) return;
+		lastPipeBatch = result.batchId ?? null;
+		const parts = [impactful(result.report) ? summary(result.report) : '', result.dueDates.length ? plural(result.dueDates.length, 'due date updated', 'due dates updated') : '']
+			.filter(Boolean);
+		if (parts.length) pipeFlash = { ok: true, text: `Saved ${body.name}. ${parts.join(', ')}.` };
+	}
+
+	async function undoPipe() {
+		if (!lastPipeBatch) return;
+		busy = true;
+		const res = await api('POST', '/api/undo', { batchId: lastPipeBatch, seriesId: data.series.id });
+		busy = false;
+		lastPipeBatch = null;
+		pipeFlash = res.ok ? { ok: true, text: 'Undone.' } : { ok: false, text: res.message };
+		if (res.ok) await invalidateAll();
+	}
+
+	function saveBook(b: PBook) {
+		const d = bookDrafts[b.id];
+		pipeCall('PATCH', `/api/books/${b.id}`, {
+			code: d.code.trim(), name: d.name.trim(), groupLabel: d.groupLabel.trim() || null,
+			batch: d.batch === null || (d.batch as unknown) === '' ? null : Number(d.batch)
+		}, `Saved ${d.code.trim()}.`);
+	}
+
+	/** Move one item up or down and save the whole order. */
+	function move(kind: 'track' | 'stage' | 'book', list: { id: string }[], index: number, by: -1 | 1) {
+		const ids = list.map((x) => x.id);
+		const to = index + by;
+		if (to < 0 || to >= ids.length) return;
+		[ids[index], ids[to]] = [ids[to], ids[index]];
+		pipeCall('PUT', `/api/series/${data.series.id}/${kind}-order`, { ids }, 'Order saved.');
+	}
+
+	const stageName = $derived(new Map(data.pipeline.stages.map((s) => [s.id, s.name])));
+
 	// ── Team ────────────────────────────────────────────────────────────────
 	type Draft = { role: string; teamLabel: string; capacity: number };
 	const toDraft = (m: Member): Draft => ({ role: m.role, teamLabel: m.teamLabel ?? '', capacity: m.capacity });
 
 	// One editable draft per member. After a reload, rows with unsaved edits keep them.
-	let drafts = $state<Record<string, Draft>>({});
+	const initialDrafts = () => Object.fromEntries(data.members.map((m) => [m.personId, toDraft(m)]));
+	let drafts = $state<Record<string, Draft>>(initialDrafts());
 	let synced: Record<string, Draft> = {};
 	$effect(() => {
 		const next: Record<string, Draft> = {};
@@ -345,6 +498,7 @@
 			<a href="#general">General</a>
 			<a href="#print">Print and publishing</a>
 			<a href="#windows">Windows</a>
+			<a href="#pipeline">Pipeline</a>
 			<a href="#team">Team</a>
 		</nav>
 	</header>
@@ -546,6 +700,174 @@
 		</form>
 	</section>
 
+	<!-- Pipeline ────────────────────────────────────────────────────────── -->
+	<section id="pipeline" class="card">
+		<h2>Pipeline</h2>
+		<p class="lede">
+			Tracks, stages and books. Edits here never create or delete tasks. Changing a stage's window exemption or deadline
+			shows the impact before anything is saved.
+		</p>
+
+		{#if pipeFlash || lastPipeBatch}
+			<div class="form-foot">
+				{#if pipeFlash}<p class="notice" class:notice--ok={pipeFlash.ok} class:notice--error={!pipeFlash.ok} role="status">{pipeFlash.text}</p>{/if}
+				{#if lastPipeBatch}<button type="button" class="btn btn-ghost btn-lg" disabled={busy} onclick={undoPipe}>Undo</button>{/if}
+			</div>
+		{/if}
+
+		<h3>Tracks</h3>
+		<ul class="tracks">
+			{#each data.pipeline.tracks as t, i (t.id)}
+				<li>
+					<div class="order">
+						<button class="btn-icon" aria-label="Move {t.name} up" disabled={busy || i === 0} onclick={() => move('track', data.pipeline.tracks, i, -1)}>↑</button>
+						<button class="btn-icon" aria-label="Move {t.name} down" disabled={busy || i === data.pipeline.tracks.length - 1} onclick={() => move('track', data.pipeline.tracks, i, 1)}>↓</button>
+					</div>
+					{#if renamingTrack?.id === t.id}
+						<form class="inline-form grow" onsubmit={renameTrack}>
+							<!-- svelte-ignore a11y_autofocus -->
+							<input class="input grow" bind:value={renamingTrack.name} maxlength="60" required autofocus aria-label="Track name" />
+							<button class="btn btn-primary" disabled={busy}>Save</button>
+							<button type="button" class="btn btn-ghost" onclick={() => (renamingTrack = null)}>Cancel</button>
+						</form>
+					{:else}
+						<div class="grow">
+							<div class="name">{t.name}</div>
+							<div class="chain">
+								{#each t.stageIds as sid, k (sid)}{k ? ' → ' : ''}{stageName.get(sid)}{/each}
+							</div>
+						</div>
+						<button class="btn btn-ghost" onclick={() => (renamingTrack = { id: t.id, name: t.name })}>Rename</button>
+					{/if}
+				</li>
+			{/each}
+		</ul>
+
+		<h3>Stages <span class="hint">in matrix column order; reordering does not change dependencies</span></h3>
+		<div class="table-wrap">
+			<table class="stages">
+				<thead>
+					<tr>
+						<th></th><th>Name</th><th>Category</th><th class="num">Days</th>
+						<th title="Review stage">Review</th><th title="Done by an outside body">External</th><th title="Ignores windows">No windows</th>
+						<th>Deadline</th><th class="num">Tasks</th><th></th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each data.pipeline.stages as s, i (s.id)}
+						{@const d = stageDrafts[s.id]}
+						{#if d}
+							<tr>
+								<td class="order">
+									<button class="btn-icon" aria-label="Move {s.name} up" disabled={busy || i === 0} onclick={() => move('stage', data.pipeline.stages, i, -1)}>↑</button>
+									<button class="btn-icon" aria-label="Move {s.name} down" disabled={busy || i === data.pipeline.stages.length - 1} onclick={() => move('stage', data.pipeline.stages, i, 1)}>↓</button>
+								</td>
+								<td>
+									<input class="input" bind:value={d.name} maxlength="60" aria-label="Stage name" />
+									<div class="muted">{s.trackNames.join(', ') || 'No track'}</div>
+								</td>
+								<td>
+									<select class="input" bind:value={d.category} aria-label="Category">
+										{#each CATEGORIES as c (c)}
+											<option value={c} disabled={s.taskCount > 0 && (c === 'gate') !== (s.category === 'gate')}>{CATEGORY_LABEL[c]}</option>
+										{/each}
+									</select>
+								</td>
+								<td class="num"><input class="input days" type="number" min="0" max="60" bind:value={d.defaultDays} aria-label="Default days" /></td>
+								<td class="check"><input type="checkbox" bind:checked={d.isReview} aria-label="Review stage" /></td>
+								<td class="check"><input type="checkbox" bind:checked={d.isExternal} aria-label="External" /></td>
+								<td class="check"><input type="checkbox" bind:checked={d.ignoresWindows} aria-label="Ignores windows" /></td>
+								<td class="deadline">
+									<select class="input" bind:value={d.deadlineAfter} aria-label="Deadline counts from">
+										<option value="">None</option>
+										{#each data.pipeline.stages.filter((x) => x.id !== s.id) as o (o.id)}<option value={o.key}>after {o.name}</option>{/each}
+									</select>
+									{#if d.deadlineAfter}
+										<span class="dl-amount">
+											+<input class="input days" type="number" min="0" max="36" bind:value={d.deadlineMonths} aria-label="Months" /> mo
+											<input class="input days" type="number" min="0" max="365" bind:value={d.deadlineDays} aria-label="Days" /> d
+										</span>
+									{/if}
+								</td>
+								<td class="num">{s.taskCount}</td>
+								<td class="right">
+									{#if stageDirty(s)}
+										<div class="actions">
+											<button class="btn btn-primary" disabled={busy || !!stagePending} onclick={() => saveStage(s)}>Save</button>
+											<button class="btn btn-ghost" onclick={() => (stageDrafts[s.id] = stageDraft(s))}>Undo</button>
+										</div>
+									{/if}
+								</td>
+							</tr>
+							{#if stagePending?.stage.id === s.id}
+								{@const p = stagePending}
+								<tr class="expand">
+									<td colspan="10">
+										{#if impactful(p.result.report)}
+											{@render impact(p.result.report, () => (stagePending = null), () => commitStage(p.stage, p.body))}
+										{:else}
+											<div class="impact" role="alertdialog" aria-label="Confirm due date changes">
+												<p><strong>This change updates {plural(p.result.dueDates.length, 'due date', 'due dates')}:</strong></p>
+												<ul class="impact-list">
+													{#each p.result.dueDates.slice(0, 8) as c (c.id)}
+														<li>{c.label}: {c.from ? fmtDate(c.from) : 'none'} → {c.to ? fmtDate(c.to) : 'none'}</li>
+													{/each}
+												</ul>
+												{#if p.result.dueDates.length > 8}<p class="hint">…and {p.result.dueDates.length - 8} more.</p>{/if}
+												<div class="form-foot">
+													<button type="button" class="btn btn-ghost btn-lg" onclick={() => (stagePending = null)}>Cancel</button>
+													<button type="button" class="btn btn-primary btn-lg" disabled={busy} onclick={() => commitStage(p.stage, p.body)}>Apply changes</button>
+												</div>
+											</div>
+										{/if}
+									</td>
+								</tr>
+							{/if}
+						{/if}
+					{/each}
+				</tbody>
+			</table>
+		</div>
+
+		<h3>Books</h3>
+		<datalist id="group-labels">{#each groupLabels as g (g)}<option value={g}></option>{/each}</datalist>
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr><th></th><th>Code</th><th>Name</th><th>{data.series.bookGroupLabel}</th><th class="num">Batch</th><th>Track</th><th class="num">Tasks</th><th></th></tr>
+				</thead>
+				<tbody>
+					{#each data.pipeline.books as b, i (b.id)}
+						{@const d = bookDrafts[b.id]}
+						{#if d}
+							<tr>
+								<td class="order">
+									<button class="btn-icon" aria-label="Move {b.code} up" disabled={busy || i === 0} onclick={() => move('book', data.pipeline.books, i, -1)}>↑</button>
+									<button class="btn-icon" aria-label="Move {b.code} down" disabled={busy || i === data.pipeline.books.length - 1} onclick={() => move('book', data.pipeline.books, i, 1)}>↓</button>
+								</td>
+								<td><input class="input code" bind:value={d.code} maxlength="20" aria-label="Code" /></td>
+								<td><input class="input" bind:value={d.name} maxlength="120" aria-label="Name" /></td>
+								<td><input class="input" list="group-labels" bind:value={d.groupLabel} maxlength="60" placeholder="None" aria-label={data.series.bookGroupLabel} /></td>
+								<td class="num"><input class="input days" type="number" min="1" max="99" bind:value={d.batch} aria-label="Batch" /></td>
+								<td class="muted">{b.trackName}</td>
+								<td class="num">{b.taskCount}</td>
+								<td class="right">
+									{#if bookDirty(b)}
+										<div class="actions">
+											<button class="btn btn-primary" disabled={busy} onclick={() => saveBook(b)}>Save</button>
+											<button class="btn btn-ghost" onclick={() => (bookDrafts[b.id] = bookDraft(b))}>Undo</button>
+										</div>
+									{/if}
+								</td>
+							</tr>
+						{/if}
+					{/each}
+				</tbody>
+			</table>
+		</div>
+		<p class="hint">Adding, removing or skipping stages and books, and moving a book to another track, come next.</p>
+	</section>
+
 	<!-- Team ────────────────────────────────────────────────────────────── -->
 	<section id="team" class="card">
 		<h2>Team</h2>
@@ -693,6 +1015,23 @@
 	.hint { font-size: 12px; color: var(--muted-foreground); }
 
 	.overflow { max-width: 340px; margin-left: 28px; }
+
+	/* Pipeline */
+	.tracks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
+	.tracks li { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) var(--sp-3); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+	.chain { font-size: 12px; color: var(--muted-foreground); }
+	.order { white-space: nowrap; display: flex; gap: 2px; }
+	td.order { display: table-cell; }
+	.btn-icon { border: 1px solid var(--border); background: var(--background); border-radius: var(--radius-sm); width: 24px; height: 24px; padding: 0; font-size: 12px; color: var(--muted-foreground); }
+	.btn-icon:hover:not(:disabled) { background: var(--muted); color: var(--foreground); }
+	.btn-icon:disabled { opacity: 0.35; cursor: default; }
+	table.stages td { vertical-align: top; }
+	td .input.days { width: 56px; min-width: 0; }
+	td .input.code { min-width: 70px; width: 80px; }
+	td.check { text-align: center; padding-top: 14px; }
+	td.check input { accent-color: var(--primary); width: 16px; height: 16px; }
+	.deadline { min-width: 180px; }
+	.dl-amount { display: flex; align-items: center; gap: 4px; margin-top: 4px; font-size: 12px; color: var(--muted-foreground); }
 	.empty { text-align: center; color: var(--muted-foreground); padding: var(--sp-6); }
 	.add-member h3 { margin-bottom: var(--sp-1); }
 	.impact { border: 1px solid var(--tertiary); background: var(--tertiary-subtle); color: var(--tertiary-foreground); border-radius: var(--radius); padding: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-2); font-size: 13px; }
