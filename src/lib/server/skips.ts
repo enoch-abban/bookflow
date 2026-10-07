@@ -7,19 +7,17 @@ import { error } from '@sveltejs/kit';
 import { and, eq, inArray } from 'drizzle-orm';
 import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
-import { activityLog, bookStageSkips, books, dependencies, stageTracks, stages, taskAssignees, tasks } from '#lib/server/db/schema.ts';
+import { activityLog, bookStageSkips, books, dependencies, stageTracks, stages, tasks } from '#lib/server/db/schema.ts';
 import { bookLinks } from '../schedule/pattern.ts';
 import { deriveEnd, toWorkingDay } from '../schedule/calendar.ts';
+import { planRelink } from '../schedule/relink.ts';
 import { buildPredMap, earliestStart, propagate, settle, type SchedTask } from './scheduler.ts';
 import { loadSeriesContext } from './series-context.ts';
 import { writeTaskChanges } from './schedule-write.ts';
 import { seriesPattern } from './pipeline-structure.ts';
+import { deleteTasks, isStarted, logger } from './removal.ts';
 
 type Dep = typeof dependencies.$inferSelect;
-
-const STARTED = ['in_progress', 'in_review', 'returned'];
-const isStarted = (t: { status: string; statusBeforeBlock: string | null }) =>
-	STARTED.includes(t.status) || (t.status === 'blocked' && STARTED.includes(t.statusBeforeBlock ?? ''));
 
 async function loadBookStage(bookId: string, stageId: string) {
 	const book = await db.select().from(books).where(eq(books.id, bookId)).then((r) => r[0]);
@@ -29,29 +27,6 @@ async function loadBookStage(bookId: string, stageId: string) {
 	const inTrack = await db.select().from(stageTracks).where(and(eq(stageTracks.stageId, stageId), eq(stageTracks.trackId, book.trackId)));
 	if (!inTrack.length) throw error(400, `${stage.name} is not part of the track ${book.code} follows.`);
 	return { book, stage };
-}
-
-/** Whether `to` is reachable from `from` over the dependencies. */
-function reachable(deps: Pick<Dep, 'predecessorId' | 'successorId'>[], from: string, to: string) {
-	const queue = [from];
-	const seen = new Set<string>();
-	while (queue.length) {
-		const cur = queue.shift()!;
-		if (cur === to) return true;
-		if (seen.has(cur)) continue;
-		seen.add(cur);
-		for (const d of deps) if (d.predecessorId === cur) queue.push(d.successorId);
-	}
-	return false;
-}
-
-function logger(seriesId: string, actorId: string, batchId: string, now: string) {
-	return (entity: 'skip' | 'task' | 'dependency', entityId: string, action: string, before: unknown, after: unknown) => ({
-		id: ulid(), seriesId, actorId, entity, entityId, action,
-		beforeJson: before ? JSON.stringify(before) : null,
-		afterJson: after ? JSON.stringify(after) : null,
-		batchId, createdAt: now,
-	});
 }
 
 /**
@@ -72,35 +47,18 @@ export async function skipStage(opts: { bookId: string; stageId: string; actorId
 	const allDeps: Dep[] = ctx.taskMap.size
 		? await db.select().from(dependencies).where(inArray(dependencies.successorId, [...ctx.taskMap.keys()]))
 		: [];
-	const into = task ? allDeps.filter((d) => d.successorId === task.id) : [];
-	const outOf = task ? allDeps.filter((d) => d.predecessorId === task.id) : [];
-	const remaining: Pick<Dep, 'predecessorId' | 'successorId'>[] = allDeps.filter((d) => d.predecessorId !== task?.id && d.successorId !== task?.id);
-	const bridges: Dep[] = [];
-	for (const p of into)
-		for (const s of outOf)
-			if (!reachable([...remaining, ...bridges], p.predecessorId, s.successorId))
-				bridges.push({ id: ulid(), predecessorId: p.predecessorId, successorId: s.successorId, lagDays: p.lagDays + s.lagDays });
+	const { touching, bridges } = task ? planRelink(new Set([task.id]), allDeps, ulid) : { touching: [], bridges: [] };
 
 	const report = { book: book.code, stage: stage.name, deletesTask: !!task, relinked: bridges.length };
 	if (opts.preview) return { preview: true as const, ...report };
 
-	const assignees = task ? await db.select().from(taskAssignees).where(eq(taskAssignees.taskId, task.id)) : [];
 	const batchId = ulid();
 	const log = logger(book.seriesId, opts.actorId, batchId, new Date().toISOString());
 
 	await db.transaction(async (tx) => {
 		await tx.insert(bookStageSkips).values({ bookId: book.id, stageId: stage.id });
 		await tx.insert(activityLog).values(log('skip', `${book.id}:${stage.id}`, 'create', null, { bookId: book.id, stageId: stage.id }));
-		if (!task) return;
-		const touching = [...into, ...outOf];
-		if (touching.length) await tx.delete(dependencies).where(inArray(dependencies.id, touching.map((d) => d.id)));
-		await tx.delete(taskAssignees).where(eq(taskAssignees.taskId, task.id));
-		await tx.delete(tasks).where(eq(tasks.id, task.id));
-		await tx.insert(activityLog).values(log('task', task.id, 'delete', { task, assignees, dependencies: touching }, null));
-		for (const b of bridges) {
-			await tx.insert(dependencies).values(b);
-			await tx.insert(activityLog).values(log('dependency', b.id, 'create', null, b));
-		}
+		if (task) await deleteTasks(tx, log, [task], touching, bridges);
 	});
 	return { preview: false as const, ...report, batchId };
 }

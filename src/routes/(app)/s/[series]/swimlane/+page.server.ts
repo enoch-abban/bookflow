@@ -12,7 +12,7 @@ import {
 	windows as windowsTable,
 	dependencies,
 } from '#lib/server/db/schema.ts';
-import { eq, inArray, asc } from 'drizzle-orm';
+import { and, eq, inArray, asc, isNull } from 'drizzle-orm';
 
 export const load: PageServerLoad = async ({ params }) => {
 	const sid = params.series;
@@ -21,15 +21,15 @@ export const load: PageServerLoad = async ({ params }) => {
 	if (!ser) throw error(404, 'Series not found');
 
 	const [stagesData, booksData, windowsData, membersData] = await Promise.all([
-		db.select().from(stages).where(eq(stages.seriesId, sid)).orderBy(asc(stages.sortOrder)),
-		db.select().from(books).where(eq(books.seriesId, sid)).orderBy(asc(books.sortOrder)),
+		db.select().from(stages).where(and(eq(stages.seriesId, sid), isNull(stages.archivedAt))).orderBy(asc(stages.sortOrder)),
+		db.select().from(books).where(and(eq(books.seriesId, sid), isNull(books.archivedAt))).orderBy(asc(books.sortOrder)),
 		db.select().from(windowsTable).where(eq(windowsTable.seriesId, sid)).orderBy(asc(windowsTable.sortOrder)),
 		db.select().from(seriesMembers).where(eq(seriesMembers.seriesId, sid)),
 	]);
 
 	const bookIds = booksData.map((b) => b.id);
 	const tasksData = bookIds.length
-		? await db.select().from(tasks).where(inArray(tasks.bookId, bookIds))
+		? await db.select().from(tasks).where(and(inArray(tasks.bookId, bookIds), inArray(tasks.stageId, stagesData.map((s) => s.id))))
 		: [];
 
 	const taskIds = tasksData.map((t) => t.id);

@@ -8,7 +8,7 @@ import {
 	series as seriesTable,
 	people,
 } from '#lib/server/db/schema.ts';
-import { eq, and, ne, asc } from 'drizzle-orm';
+import { eq, and, ne, asc, isNull } from 'drizzle-orm';
 import { fail } from '@sveltejs/kit';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -46,7 +46,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.innerJoin(books, eq(books.id, tasks.bookId))
 		.innerJoin(stages, eq(stages.id, tasks.stageId))
 		.innerJoin(seriesTable, eq(seriesTable.id, books.seriesId))
-		.where(and(eq(taskAssignees.personId, person.id), ne(tasks.status, 'done')))
+		.where(and(eq(taskAssignees.personId, person.id), ne(tasks.status, 'done'), isNull(books.archivedAt), isNull(stages.archivedAt)))
 		.orderBy(asc(tasks.endDate));
 
 	// Group by urgency

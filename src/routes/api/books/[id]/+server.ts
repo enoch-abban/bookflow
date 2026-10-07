@@ -6,6 +6,7 @@ import { db } from '#lib/server/db/index.ts';
 import { activityLog, books } from '#lib/server/db/schema.ts';
 import { parseBody, requireCoord } from '#lib/server/api-auth.ts';
 import { parseOr400, updateBookSchema } from '#lib/server/validation.ts';
+import { removeBook } from '#lib/server/removal.ts';
 
 type BookRow = typeof books.$inferSelect;
 
@@ -37,4 +38,15 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 		return row;
 	});
 	return json({ book });
+};
+
+// DELETE /api/books/:id — remove a book: not-started tasks go, started ones block (409),
+// and the book is archived instead when Done work, an ISBN or a print approval exists.
+export const DELETE: RequestHandler = async ({ params, request, url, locals }) => {
+	const book = await db.select({ seriesId: books.seriesId }).from(books).where(eq(books.id, params.id)).then((r) => r[0]);
+	if (!book) throw error(404, 'Book not found');
+	const { personId } = await requireCoord(locals, book.seriesId);
+	const body = (await request.json().catch(() => ({}))) as { preview?: boolean };
+	const preview = body.preview === true || url.searchParams.get('preview') === 'true';
+	return json(await removeBook({ bookId: params.id, actorId: personId, preview }));
 };

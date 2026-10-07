@@ -16,13 +16,13 @@ export async function loadSeriesContext(seriesId: string) {
 	if (!ser) throw error(404, 'Series not found');
 
 	const [booksData, windowRows] = await Promise.all([
-		db.select({ id: books.id, code: books.code }).from(books).where(eq(books.seriesId, seriesId)),
+		db.select({ id: books.id, code: books.code, archivedAt: books.archivedAt }).from(books).where(eq(books.seriesId, seriesId)),
 		db.select().from(windows).where(eq(windows.seriesId, seriesId)).orderBy(asc(windows.startDate)),
 	]);
 	const bookIds = booksData.map(b => b.id);
 
 	const rows = bookIds.length
-		? await db.select({ task: tasks, ignoresWindows: stages.ignoresWindows, stageKey: stages.key })
+		? await db.select({ task: tasks, ignoresWindows: stages.ignoresWindows, stageKey: stages.key, stageArchived: stages.archivedAt })
 			.from(tasks)
 			.innerJoin(stages, eq(stages.id, tasks.stageId))
 			.where(inArray(tasks.bookId, bookIds))
@@ -55,7 +55,8 @@ export async function loadSeriesContext(seriesId: string) {
 
 	// A book's projected finish is its binding task's end (spec: Projected dates).
 	const bookCode = new Map(booksData.map(b => [b.id, b.code]));
-	const finishTaskIds = new Set(rows.filter(r => r.stageKey === 'binding').map(r => r.task.id));
+	const archivedBooks = new Set(booksData.filter(b => b.archivedAt).map(b => b.id));
+	const finishTaskIds = new Set(rows.filter(r => r.stageKey === 'binding' && !r.stageArchived && !archivedBooks.has(r.task.bookId)).map(r => r.task.id));
 	const labels = new Map(tasksData.map(t => [t.id, `${t.title} · ${bookCode.get(t.bookId) ?? ''}`]));
 
 	return { series: ser, taskMap, depList, tasksData, booksData, rules, windows: wins, finishTaskIds, labels };

@@ -10,7 +10,7 @@ import {
 	taskAssignees,
 	people,
 } from '#lib/server/db/schema.ts';
-import { eq, inArray, asc } from 'drizzle-orm';
+import { and, eq, inArray, asc, isNull } from 'drizzle-orm';
 
 export const load: PageServerLoad = async ({ params }) => {
 	const sid = params.series;
@@ -21,7 +21,7 @@ export const load: PageServerLoad = async ({ params }) => {
 	const stagesData = await db
 		.select()
 		.from(stages)
-		.where(eq(stages.seriesId, sid))
+		.where(and(eq(stages.seriesId, sid), isNull(stages.archivedAt)))
 		.orderBy(asc(stages.sortOrder));
 
 	const stageIds = stagesData.map((s) => s.id);
@@ -32,12 +32,12 @@ export const load: PageServerLoad = async ({ params }) => {
 	const booksData = await db
 		.select()
 		.from(books)
-		.where(eq(books.seriesId, sid))
+		.where(and(eq(books.seriesId, sid), isNull(books.archivedAt)))
 		.orderBy(asc(books.sortOrder));
 
 	const bookIds = booksData.map((b) => b.id);
 	const tasksData = bookIds.length
-		? await db.select().from(tasks).where(inArray(tasks.bookId, bookIds))
+		? await db.select().from(tasks).where(and(inArray(tasks.bookId, bookIds), inArray(tasks.stageId, stageIds)))
 		: [];
 
 	const taskIds = tasksData.map((t) => t.id);

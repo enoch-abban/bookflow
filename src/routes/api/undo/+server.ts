@@ -2,7 +2,7 @@ import type { RequestHandler } from './$types';
 import { json, error } from '@sveltejs/kit';
 import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
-import { activityLog, books, bookStageSkips, dependencies, printRecords, series, stages, taskAssignees, tasks, windows } from '#lib/server/db/schema.ts';
+import { activityLog, baselineTasks, books, bookStageSkips, dependencies, printRecords, series, stageLinks, stageTracks, stages, taskAssignees, taskComments, tasks, windows } from '#lib/server/db/schema.ts';
 import { and, asc, eq, inArray, or } from 'drizzle-orm';
 import { parseBody, resolvePerson } from '#lib/server/api-auth.ts';
 
@@ -11,7 +11,7 @@ type Body = { batchId: string; seriesId: string };
 const TASK_FIELDS = ['startDate', 'endDate', 'durationDays', 'windowId', 'scheduleState', 'overflowAllowed', 'dueDate'] as const;
 
 // Settings rows a batch can change alongside its tasks; restored field by field.
-const SETTING_TABLES = { series, stage: stages } as const;
+const SETTING_TABLES = { series, stage: stages, book: books } as const;
 type SettingEntity = keyof typeof SETTING_TABLES;
 const isSetting = (entity: string): entity is SettingEntity => entity in SETTING_TABLES;
 
@@ -118,8 +118,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	// Tasks, dependencies and skips the batch created or deleted (skipping a stage, lifting
 	// a skip, adding a dependency). Deleted rows come back; created ones go, provided a
 	// created task is still untouched and a deleted one has not reappeared.
-	const ROW_ENTITIES = ['task', 'dependency', 'skip'];
-	const rowDeletes = entries.filter(e => ROW_ENTITIES.includes(e.entity) && e.action === 'delete' && e.beforeJson);
+	const ROW_ENTITIES = ['task', 'dependency', 'skip', 'stage_link'];
+	// Removed books and stages come back before their tasks, which point at them.
+	const rowDeletes = entries
+		.filter(e => [...ROW_ENTITIES, 'book', 'stage'].includes(e.entity) && e.action === 'delete' && e.beforeJson)
+		.sort((a, b) => Number(['stage', 'book'].includes(b.entity)) - Number(['stage', 'book'].includes(a.entity)));
 	const rowCreates = entries.filter(e => ROW_ENTITIES.includes(e.entity) && e.action === 'create' && e.afterJson);
 	for (const entry of rowDeletes.filter(e => e.entity === 'task')) {
 		const back = await db.select({ id: tasks.id }).from(tasks).where(eq(tasks.id, entry.entityId));
@@ -169,9 +172,24 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		const deletedDeps: (typeof dependencies.$inferSelect)[] = [];
 		for (const entry of rowDeletes) {
 			const before = JSON.parse(entry.beforeJson!);
-			if (entry.entity === 'task') {
+			if (entry.entity === 'stage') {
+				await tx.insert(stages).values(before.stage).onConflictDoNothing();
+				if (before.stageTracks?.length) await tx.insert(stageTracks).values(before.stageTracks).onConflictDoNothing();
+				if (before.skips?.length) await tx.insert(bookStageSkips).values(before.skips).onConflictDoNothing();
+				await tx.insert(activityLog).values({ id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'stage', entityId: entry.entityId, action: 'undo', afterJson: JSON.stringify(before.stage), batchId: undoBatch, createdAt: now });
+			} else if (entry.entity === 'book') {
+				await tx.insert(books).values(before.book).onConflictDoNothing();
+				if (before.skips?.length) await tx.insert(bookStageSkips).values(before.skips).onConflictDoNothing();
+				if (before.printRecord) await tx.insert(printRecords).values(before.printRecord).onConflictDoNothing();
+				await tx.insert(activityLog).values({ id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'book', entityId: entry.entityId, action: 'undo', afterJson: JSON.stringify(before.book), batchId: undoBatch, createdAt: now });
+			} else if (entry.entity === 'stage_link') {
+				await tx.insert(stageLinks).values(before).onConflictDoNothing();
+				await tx.insert(activityLog).values({ id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'stage_link', entityId: entry.entityId, action: 'undo', afterJson: JSON.stringify(before), batchId: undoBatch, createdAt: now });
+			} else if (entry.entity === 'task') {
 				await tx.insert(tasks).values(before.task);
 				if (before.assignees?.length) await tx.insert(taskAssignees).values(before.assignees);
+				if (before.baseline?.length) await tx.insert(baselineTasks).values(before.baseline).onConflictDoNothing();
+				if (before.comments?.length) await tx.insert(taskComments).values(before.comments).onConflictDoNothing();
 				deletedDeps.push(...(before.dependencies ?? []));
 				await logRow('task', entry.entityId, null, before.task);
 			} else if (entry.entity === 'dependency') {
@@ -243,6 +261,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			await tx.delete(taskAssignees).where(eq(taskAssignees.taskId, task.id));
 			await tx.delete(tasks).where(eq(tasks.id, task.id));
 			await logRow('task', task.id, task, null);
+		}
+		for (const entry of rowCreates.filter(e => e.entity === 'stage_link')) {
+			const link = JSON.parse(entry.afterJson!);
+			await tx.delete(stageLinks).where(and(eq(stageLinks.fromStageId, link.fromStageId), eq(stageLinks.toStageId, link.toStageId)));
+			await tx.insert(activityLog).values({ id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'stage_link', entityId: entry.entityId, action: 'undo', beforeJson: JSON.stringify(link), batchId: undoBatch, createdAt: now });
 		}
 		for (const entry of rowCreates.filter(e => e.entity === 'skip')) {
 			const skip = JSON.parse(entry.afterJson!);

@@ -84,14 +84,21 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		: [];
 	const sum = (pick: (r: (typeof taskStats)[number]) => boolean) => taskStats.filter(pick).reduce((a, r) => a + r.n, 0);
 	const trackName = new Map(trackRows.map((t) => [t.id, t.name]));
+	// Archived stages and books keep Done work as history; they are listed separately.
+	const liveStages = stageRows.filter((s) => !s.archivedAt);
+	const liveBooks = bookRows.filter((b) => !b.archivedAt);
 	const pipeline = {
-		tracks: trackRows.map((t) => ({ ...t, stageIds: stageRows.filter((s) => links.some((l) => l.stageId === s.id && l.trackId === t.id)).map((s) => s.id) })),
-		stages: stageRows.map((s) => ({
+		archived: {
+			stages: stageRows.filter((s) => s.archivedAt).map((s) => ({ id: s.id, name: s.name, archivedAt: s.archivedAt! })),
+			books: bookRows.filter((b) => b.archivedAt).map((b) => ({ id: b.id, code: b.code, name: b.name, archivedAt: b.archivedAt! }))
+		},
+		tracks: trackRows.map((t) => ({ ...t, bookCount: liveBooks.filter((b) => b.trackId === t.id).length, stageIds: liveStages.filter((s) => links.some((l) => l.stageId === s.id && l.trackId === t.id)).map((s) => s.id) })),
+		stages: liveStages.map((s) => ({
 			...s,
 			trackNames: trackRows.filter((t) => links.some((l) => l.stageId === s.id && l.trackId === t.id)).map((t) => t.name),
 			taskCount: sum((r) => r.stageId === s.id)
 		})),
-		books: bookRows.map((b) => ({
+		books: liveBooks.map((b) => ({
 			...b,
 			trackName: trackName.get(b.trackId) ?? '',
 			taskCount: sum((r) => r.bookId === b.id),

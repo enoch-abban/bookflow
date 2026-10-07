@@ -380,6 +380,41 @@
 
 	const stageName = $derived(new Map(data.pipeline.stages.map((s) => [s.id, s.name])));
 
+	// Remove a stage or a book: preview what is deleted, kept or archived, then confirm.
+	type RemovePreview = {
+		archive: boolean; reason?: string | null; deletesTasks: number; keepsTasks: number;
+		relinked: number; books?: string[]; batchId?: string;
+	};
+	let removePending = $state<{ kind: 'stage' | 'book'; id: string; label: string; preview: RemovePreview } | null>(null);
+
+	async function askRemove(kind: 'stage' | 'book', id: string, label: string) {
+		busy = true;
+		pipeFlash = null;
+		const res = await api<RemovePreview>('DELETE', `/api/${kind}s/${id}`, { preview: true });
+		busy = false;
+		if (!res.ok) return (pipeFlash = { ok: false, text: res.message });
+		removePending = { kind, id, label, preview: res.data };
+	}
+
+	async function confirmRemove() {
+		if (!removePending) return;
+		const { kind, id, label, preview: p } = removePending;
+		const result = await pipeCall('DELETE', `/api/${kind}s/${id}`, {}, p.archive ? `Archived ${label}.` : `Removed ${label}.`);
+		if (!result) return;
+		removePending = null;
+		lastPipeBatch = (result as unknown as RemovePreview).batchId ?? null;
+	}
+
+	function removeSummary(p: RemovePreview) {
+		const parts: string[] = [];
+		if (p.deletesTasks) parts.push(`${plural(p.deletesTasks, 'not-started task is', 'not-started tasks are')} deleted${p.books?.length ? ` (${p.books.join(', ')})` : ''}`);
+		if (p.relinked) parts.push(`${plural(p.relinked, 'dependency is', 'dependencies are')} relinked around them`);
+		parts.push(p.archive
+			? `it is archived rather than deleted, because ${p.reason ?? `${plural(p.keepsTasks, 'Done task is', 'Done tasks are')} kept as history`}; it disappears from the matrix, swimlane and projections`
+			: 'nothing has started, so it is deleted');
+		return parts.join('; ');
+	}
+
 	// Skip a stage for one book, or lift a skip: preview, then confirm.
 	type SkipPreview = {
 		book: string; stage: string;
@@ -570,6 +605,25 @@
 			<button type="button" class="btn btn-primary btn-lg" disabled={busy} onclick={apply}>Apply changes</button>
 		</div>
 	</div>
+{/snippet}
+
+{#snippet removePanel(colspan: number)}
+	{#if removePending}
+		{@const p = removePending}
+		<tr class="expand">
+			<td {colspan}>
+				<div class="impact" role="alertdialog" aria-label="Confirm removal">
+					<p><strong>Remove {p.label}:</strong> {removeSummary(p.preview)}.</p>
+					<div class="form-foot">
+						<button type="button" class="btn btn-ghost btn-lg" onclick={() => (removePending = null)}>Cancel</button>
+						<button type="button" class="btn btn-danger btn-lg" disabled={busy} onclick={confirmRemove}>
+							{p.preview.archive ? 'Archive' : 'Remove'} {p.label}
+						</button>
+					</div>
+				</div>
+			</td>
+		</tr>
+	{/if}
 {/snippet}
 
 <datalist id="team-labels">
@@ -876,14 +930,16 @@
 								</td>
 								<td class="num">{s.taskCount}</td>
 								<td class="right">
-									{#if stageDirty(s)}
-										<div class="actions">
+									<div class="actions">
+										{#if stageDirty(s)}
 											<button class="btn btn-primary" disabled={busy || !!stagePending} onclick={() => saveStage(s)}>Save</button>
 											<button class="btn btn-ghost" onclick={() => (stageDrafts[s.id] = stageDraft(s))}>Undo</button>
-										</div>
-									{/if}
+										{/if}
+										<button class="btn btn-danger" disabled={busy || !!removePending} onclick={() => askRemove('stage', s.id, s.name)}>Remove</button>
+									</div>
 								</td>
 							</tr>
+							{#if removePending?.kind === 'stage' && removePending.id === s.id}{@render removePanel(10)}{/if}
 							{#if stagePending?.stage.id === s.id}
 								{@const p = stagePending}
 								<tr class="expand">
@@ -944,9 +1000,11 @@
 										{/if}
 										<button class="btn btn-ghost" aria-expanded={stagesOpenFor === b.id}
 											onclick={() => { stagesOpenFor = stagesOpenFor === b.id ? null : b.id; skipPending = null; }}>Stages</button>
+										<button class="btn btn-danger" disabled={busy || !!removePending} onclick={() => askRemove('book', b.id, b.code)}>Remove</button>
 									</div>
 								</td>
 							</tr>
+							{#if removePending?.kind === 'book' && removePending.id === b.id}{@render removePanel(8)}{/if}
 							{#if stagesOpenFor === b.id}
 								{@const trackStageIds = data.pipeline.tracks.find((t) => t.id === b.trackId)?.stageIds ?? []}
 								<tr class="expand">
@@ -1078,7 +1136,18 @@
 				<div class="form-foot"><button class="btn btn-primary btn-lg" disabled={busy}>Preview</button></div>
 			{/if}
 		</form>
-		<p class="hint">Adding and removing stages, removing books, and moving a book to another track come next.</p>
+		{#if data.pipeline.archived.stages.length || data.pipeline.archived.books.length}
+			<div class="archived">
+				<h3>Archived <span class="hint">kept because they hold Done work; hidden from the matrix, swimlane and projections</span></h3>
+				{#if data.pipeline.archived.stages.length}
+					<p>Stages: {data.pipeline.archived.stages.map((s) => `${s.name} (${fmtDate(s.archivedAt)})`).join(', ')}</p>
+				{/if}
+				{#if data.pipeline.archived.books.length}
+					<p>Books: {data.pipeline.archived.books.map((b) => `${b.code} · ${b.name} (${fmtDate(b.archivedAt)})`).join(', ')}</p>
+				{/if}
+			</div>
+		{/if}
+		<p class="hint">Adding a stage, moving a book to another track, and adding or deleting tracks come next.</p>
 	</section>
 
 	<!-- Team ────────────────────────────────────────────────────────────── -->
@@ -1244,6 +1313,8 @@
 	td.check { text-align: center; padding-top: 14px; }
 	td.check input { accent-color: var(--primary); width: 16px; height: 16px; }
 	.deadline { min-width: 180px; }
+	.archived { border: 1px dashed var(--border); border-radius: var(--radius-sm); padding: var(--sp-3); font-size: 13px; color: var(--muted-foreground); }
+	.archived p { margin: var(--sp-1) 0 0; }
 	.stage-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: var(--sp-2) 0; }
 	.stage-chip { font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--primary); background: var(--primary-subtle); color: var(--primary-subtle-foreground); }
 	.stage-chip.skipped { border-style: dashed; border-color: var(--border); background: transparent; color: var(--muted-foreground); text-decoration: line-through; }
