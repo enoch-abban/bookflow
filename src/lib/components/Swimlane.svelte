@@ -148,8 +148,19 @@
 
 	type CalDay = { date: string; isWeekend: boolean; dayNum: number; monthLabel: string | null };
 
+	// Two weeks past the target (spec), extended to the hard limit, the last window and
+	// the last task: anything outside the axis would have no x position.
+	const axisEnd = $derived(
+		[
+			addCalDays(series.targetDate, 14),
+			series.hardLimitDate ?? '',
+			...windowsProp.map((w) => w.endDate),
+			...localTasks.map((t) => t.endDate)
+		].reduce((a, b) => (b > a ? b : a))
+	);
+
 	const calDays = $derived.by((): CalDay[] => {
-		const end = addCalDays(series.targetDate, 14);
+		const end = axisEnd;
 		const days: CalDay[] = [];
 		const d = new Date(series.startDate + 'T12:00:00Z');
 		const e = new Date(end + 'T12:00:00Z');
@@ -282,13 +293,37 @@
 		}];
 	});
 
-	// task → lane row index (0-based)
-	const taskRow = $derived.by(() => {
-		const m = new Map<string, number>();
+	// ── Lane layout ───────────────────────────────────────────────────────────
+	// Tasks in one lane that overlap in time (e.g. image generation and image review
+	// running together) are stacked into sub-rows, and the lane grows to fit. Every
+	// vertical position (bars, arrows, background) comes from this one calculation,
+	// group header rows included.
+
+	const GRP_H = 22;
+	type LaneBox = { top: number; height: number; header: string | null; sub: Map<string, number> };
+
+	const layout = $derived.by(() => {
+		const boxes: LaneBox[] = [];
+		const centerY = new Map<string, number>();
+		let y = 0;
 		lanes.forEach((lane, i) => {
-			for (const t of lane.tasks) m.set(t.id, i);
+			const header = showGroupHeader(i);
+			if (header) y += GRP_H;
+			const rowEnds: string[] = []; // last end date in each sub-row
+			const sub = new Map<string, number>();
+			const ordered = [...lane.tasks].sort((a, b) => a.startDate.localeCompare(b.startDate) || b.durationDays - a.durationDays);
+			for (const t of ordered) {
+				let r = rowEnds.findIndex((end) => end < t.startDate);
+				if (r < 0) r = rowEnds.push(t.endDate) - 1;
+				else rowEnds[r] = t.endDate;
+				sub.set(t.id, r);
+				centerY.set(t.id, y + r * ROW_H + ROW_H / 2);
+			}
+			const height = Math.max(1, rowEnds.length) * ROW_H;
+			boxes.push({ top: y, height, header, sub });
+			y += height;
 		});
-		return m;
+		return { boxes, centerY, totalH: y };
 	});
 
 	// ── Bar geometry ──────────────────────────────────────────────────────────
@@ -305,27 +340,26 @@
 
 	// ── Dependency arrows ─────────────────────────────────────────────────────
 
-	type Arrow = { x1: number; y1: number; x2: number; y2: number; violated: boolean };
+	// Arrows are hidden by default to keep the chart readable. A task's arrows show while
+	// it is hovered, focused, dragged or resized; arrows flagging a violation always show.
+
+	type Arrow = { key: string; x1: number; y1: number; x2: number; y2: number; violated: boolean };
+
+	let hoverId = $state<string | null>(null);
 
 	const arrows = $derived.by((): Arrow[] => {
+		const focusId = drag?.taskId ?? resizing?.taskId ?? hoverId;
 		return deps.flatMap((dep) => {
 			const pred = localTasks.find((t) => t.id === dep.predecessorId);
 			const succ = localTasks.find((t) => t.id === dep.successorId);
 			if (!pred || !succ) return [];
-			const r1 = taskRow.get(pred.id);
-			const r2 = taskRow.get(succ.id);
-			if (r1 === undefined || r2 === undefined) return [];
+			const y1 = layout.centerY.get(pred.id);
+			const y2 = layout.centerY.get(succ.id);
+			if (y1 === undefined || y2 === undefined) return [];
 			// A task's successor starts the working day after it ends; a gate's may start the same day.
 			const violated = pred.durationDays === 0 ? succ.startDate < pred.endDate : succ.startDate <= pred.endDate;
-			return [
-				{
-					x1: barRight(pred),
-					y1: r1 * ROW_H + ROW_H / 2,
-					x2: barLeft(succ),
-					y2: r2 * ROW_H + ROW_H / 2,
-					violated
-				}
-			];
+			if (!violated && focusId !== pred.id && focusId !== succ.id) return [];
+			return [{ key: dep.id, x1: barRight(pred), y1, x2: barLeft(succ), y2, violated }];
 		});
 	});
 
@@ -665,6 +699,7 @@
 					{@const wx2 = (dateX.get(win.endDate) ?? 0) + DAY_W}
 					<div
 						class="sl-win-band"
+						title={win.label}
 						style="left:{wx}px;width:{wx2 - wx}px;height:{WIN_ROW}px;background:{WIN_COLORS[
 							wi % WIN_COLORS.length
 						]};border-color:{WIN_BORDER_COLORS[wi % WIN_BORDER_COLORS.length]}"
@@ -702,7 +737,7 @@
 		<!-- Lanes body -->
 		<div class="sl-body" style="min-width:{LABEL_W + totalW}px">
 			<!-- Background grid (weekend cols + window dividers + today/target lines) -->
-			<div class="sl-bg" style="left:{LABEL_W}px;width:{totalW}px;height:{lanes.length * ROW_H}px">
+			<div class="sl-bg" style="left:{LABEL_W}px;width:{totalW}px;height:{layout.totalH}px">
 				{#each calDays as day}
 					{#if day.isWeekend}
 						<div class="sl-wknd" style="left:{dateX.get(day.date) ?? 0}px;width:{WKND_W}px"></div>
@@ -729,7 +764,7 @@
 			<!-- SVG arrows overlay -->
 			<svg
 				class="sl-arrows"
-				style="left:{LABEL_W}px;width:{totalW}px;height:{lanes.length * ROW_H}px"
+				style="left:{LABEL_W}px;width:{totalW}px;height:{layout.totalH}px"
 			>
 				<defs>
 					<marker id="ah" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
@@ -739,7 +774,7 @@
 						<path d="M 0 0 L 6 3 L 0 6 Z" fill="var(--danger)" />
 					</marker>
 				</defs>
-				{#each arrows as a}
+				{#each arrows as a (a.key)}
 					<path
 						d={arrow(a.x1, a.y1, a.x2, a.y2)}
 						fill="none"
@@ -757,7 +792,8 @@
 				{#if grpHdr}
 					<div class="sl-grp-hdr" style="padding-left:{LABEL_W + 8}px">{grpHdr}</div>
 				{/if}
-				<div class="sl-lane" style="height:{ROW_H}px">
+				{@const box = layout.boxes[li]}
+				<div class="sl-lane" style="height:{box.height}px">
 					<!-- Sticky label -->
 					<div class="sl-label">
 						<span class="sl-label-code">{lane.label}</span>
@@ -770,6 +806,7 @@
 						{#each lane.tasks as task}
 							{@const stage = stageMap.get(task.stageId)}
 							{@const bx = barLeft(task)}
+							{@const rowTop = (box.sub.get(task.id) ?? 0) * ROW_H}
 							{@const bw = barWidth(task)}
 							{@const isGate = stage?.category === 'gate'}
 							{@const isDone = task.status === 'done'}
@@ -779,7 +816,7 @@
 								<!-- Diamond marker -->
 								<div
 									class="sl-gate"
-									style="left:{bx + DAY_W / 2 - 9}px;top:{ROW_H / 2 - 9}px"
+									style="left:{bx + DAY_W / 2 - 9}px;top:{rowTop + ROW_H / 2 - 9}px"
 									title={stage?.name ?? ''}
 									class:cp-dim={isCpFaded}
 								></div>
@@ -791,8 +828,12 @@
 									class:cp-dim={isCpFaded}
 									class:sl-bar--outside={outside}
 									class:sl-bar--unscheduled={lane.overflow}
-									style="left:{bx}px;width:{bw}px;top:4px;height:{ROW_H - 8}px"
+									style="left:{bx}px;width:{bw}px;top:{rowTop + 4}px;height:{ROW_H - 8}px"
 									onpointerdown={(e) => onBarDown(e, task)}
+									onpointerenter={() => (hoverId = task.id)}
+									onpointerleave={() => hoverId === task.id && (hoverId = null)}
+									onfocus={() => (hoverId = task.id)}
+									onblur={() => hoverId === task.id && (hoverId = null)}
 									role="button"
 									tabindex="0"
 									title="{stage?.name ?? ''} · {bookMap.get(task.bookId)?.code ?? ''}{ovf ? ` · overflows ${ovf.days} working day${ovf.days === 1 ? '' : 's'}` : ''}{outside ? ' · Outside window' : ''}{lane.overflow ? ' · Unscheduled: no window has room' : ''}"
