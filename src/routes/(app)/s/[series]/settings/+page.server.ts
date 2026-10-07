@@ -2,7 +2,7 @@ import type { PageServerLoad } from './$types';
 import { error } from '@sveltejs/kit';
 import { and, asc, count, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '#lib/server/db/index.ts';
-import { books, invites, people, series, seriesMembers, stages, stageTracks, tasks, tracks, windows } from '#lib/server/db/schema.ts';
+import { bookStageSkips, books, invites, people, series, seriesMembers, stages, stageTracks, tasks, tracks, windows } from '#lib/server/db/schema.ts';
 import { requireCoord } from '#lib/server/api-auth.ts';
 import { inviteState } from '#lib/server/invites.ts';
 
@@ -79,6 +79,9 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		.innerJoin(books, eq(books.id, tasks.bookId))
 		.where(eq(books.seriesId, ser.id))
 		.groupBy(tasks.stageId, tasks.bookId);
+	const skipRows = bookRows.length
+		? await db.select().from(bookStageSkips).where(inArray(bookStageSkips.bookId, bookRows.map((b) => b.id)))
+		: [];
 	const sum = (pick: (r: (typeof taskStats)[number]) => boolean) => taskStats.filter(pick).reduce((a, r) => a + r.n, 0);
 	const trackName = new Map(trackRows.map((t) => [t.id, t.name]));
 	const pipeline = {
@@ -88,7 +91,12 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 			trackNames: trackRows.filter((t) => links.some((l) => l.stageId === s.id && l.trackId === t.id)).map((t) => t.name),
 			taskCount: sum((r) => r.stageId === s.id)
 		})),
-		books: bookRows.map((b) => ({ ...b, trackName: trackName.get(b.trackId) ?? '', taskCount: sum((r) => r.bookId === b.id) }))
+		books: bookRows.map((b) => ({
+			...b,
+			trackName: trackName.get(b.trackId) ?? '',
+			taskCount: sum((r) => r.bookId === b.id),
+			skippedStageIds: skipRows.filter((k) => k.bookId === b.id).map((k) => k.stageId)
+		}))
 	};
 
 	const teamLabels = [...new Set(members.map((m) => m.teamLabel).filter((l): l is string => !!l))].sort();

@@ -18,6 +18,9 @@ import {
 	tracks,
 	stages,
 	stageTracks,
+	stageLinks,
+	bookStageSkips,
+	printRecords,
 	books,
 	windows as windowsTable,
 	people,
@@ -30,6 +33,7 @@ import {
 	activityLog,
 } from '../schema.ts';
 import { checkExplicitMove, isWorkingDay, type WindowRules } from '../../scheduler.ts';
+import { bookLinks } from '../../../schedule/pattern.ts';
 
 const client = createClient({ url: process.env.DATABASE_URL! });
 const db = drizzle(client);
@@ -300,12 +304,21 @@ async function main() {
 		...tail('N1', 0, { ind: ['2026-11-12', '2026-11-16'], plr: ['2026-11-17', '2026-11-18'], prn: ['2026-11-19', '2026-11-20'], bnd: ['2026-11-23', '2026-11-24'], dep: '2026-11-25' }),
 	];
 
-	// Each book's tasks run in this order; every task depends on the one before it.
-	// Batch 3's image generation feeds the overall review, because image review runs alongside it.
-	const ORDER = [
-		'image_review', 'overall_review', 'content_work', 'content_images_review',
-		'indesign', 'post_layout_review', 'printing', 'binding', 'legal_deposit',
+	// ── Dependency pattern (stage_links) ──────────────────────────────────────
+	// The series' default links between stages, from the spec's pipeline. Publishing runs
+	// alongside layout: submission follows the internal content review, and print approval
+	// waits for both the corrected layout and the ISBN. Batch 3's image review runs
+	// alongside generation, so generation feeds the overall review directly.
+	const PATTERN: [string, string][] = [
+		['image_generation', 'overall_review'], ['image_review', 'overall_review'], ['overall_review', 'indesign'],
+		['content_work', 'content_images_review'], ['content_images_review', 'indesign'],
+		['indesign', 'post_layout_review'], ['post_layout_review', 'correction_iteration'], ['correction_iteration', 'print_approval'],
+		['overall_review', 'manuscript_submission'], ['content_images_review', 'manuscript_submission'],
+		['manuscript_submission', 'agency_review'], ['agency_review', 'isbn_issued'], ['isbn_issued', 'print_approval'],
+		['print_approval', 'printing'], ['printing', 'binding'], ['binding', 'legal_deposit'],
 	];
+	await db.insert(stageLinks).values(PATTERN.map(([from, to]) => ({ fromStageId: ST[from], toStageId: ST[to], lagDays: 0 })));
+	const links = PATTERN.map(([from, to]) => ({ from: ST[from], to: ST[to], lagDays: 0 }));
 
 	const rules: WindowRules = { enforce: true, windows: WINDOWS, overflowDays: OVERFLOW_DAYS };
 	const taskRows: (typeof tasks.$inferInsert)[] = [];
@@ -342,18 +355,38 @@ async function main() {
 		td.aa.forEach((a, i) => assigneeRows.push({ taskId: id, personId: P[a], isLead: i === 0 ? 1 : 0 }));
 	}
 
+	// Every track stage a book has no Rev 5 task for is recorded as a skip, so later
+	// structural changes never recreate it: image generation for Grades 4 to 9, content
+	// and images review for batch 4, and, for every book, correction iteration, the
+	// publishing stages and print approval, which Rev 5 does not plan. Lifting a skip
+	// adds the stage to that book.
+	const trackStages: Record<string, string[]> = {
+		[TRK.img]: [...IMG_ONLY, ...BOTH],
+		[TRK.cnt]: [...CNT_ONLY, ...BOTH],
+	};
+	const bookTrack: Record<string, string> = Object.fromEntries(
+		['G9','G8','G7','G6','G5','G4','G3','G2','G1'].map((bc) => [bc, TRK.img]).concat(['KG2','KG1','N2','N1'].map((bc) => [bc, TRK.cnt]))
+	);
+	const skipRows: (typeof bookStageSkips.$inferInsert)[] = [];
 	const depRows: (typeof dependencies.$inferInsert)[] = [];
 	for (const bc of Object.keys(BK)) {
-		const chain = ORDER.filter((sk) => taskId[`${bc}:${sk}`]);
-		for (let i = 1; i < chain.length; i++)
-			depRows.push({ id: ulid(), predecessorId: taskId[`${bc}:${chain[i - 1]}`], successorId: taskId[`${bc}:${chain[i]}`], lagDays: 0 });
-		if (taskId[`${bc}:image_generation`] && taskId[`${bc}:overall_review`])
-			depRows.push({ id: ulid(), predecessorId: taskId[`${bc}:image_generation`], successorId: taskId[`${bc}:overall_review`], lagDays: 0 });
+		const stagesOfBook = trackStages[bookTrack[bc]];
+		for (const sk of stagesOfBook) if (!taskId[`${bc}:${sk}`]) skipRows.push({ bookId: BK[bc], stageId: ST[sk] });
+		const present = new Set(stagesOfBook.filter((sk) => taskId[`${bc}:${sk}`]).map((sk) => ST[sk]));
+		const taskOfStage = Object.fromEntries(stagesOfBook.map((sk) => [ST[sk], taskId[`${bc}:${sk}`]]));
+		for (const l of bookLinks(present, links))
+			depRows.push({ id: ulid(), predecessorId: taskOfStage[l.from], successorId: taskOfStage[l.to], lagDays: l.lagDays });
 	}
 
 	await db.insert(tasks).values(taskRows);
 	await db.insert(taskAssignees).values(assigneeRows);
+	await db.insert(bookStageSkips).values(skipRows);
 	await db.insert(dependencies).values(depRows);
+
+	// One print record per book, from the series defaults.
+	await db.insert(printRecords).values(
+		Object.values(BK).map((bookId) => ({ bookId, copiesPlanned: 20, depositCopies: 2, updatedAt: NOW }))
+	);
 
 	// ── Baseline – Rev 5 ───────────────────────────────────────────────────────
 
@@ -386,7 +419,7 @@ async function main() {
 		createdAt: NOW,
 	});
 
-	console.log(`Done. Series: ${SERIES} | Tasks: ${taskRows.length} | Dependencies: ${depRows.length} | Windows: ${WINDOWS.length}`);
+	console.log(`Done. Series: ${SERIES} | Tasks: ${taskRows.length} | Dependencies: ${depRows.length} | Skips: ${skipRows.length} | Windows: ${WINDOWS.length}`);
 	if (problems.length) {
 		console.warn(`\n${problems.length} Rev 5 task(s) do not fit their window, even with the ${OVERFLOW_DAYS}-day overflow allowance:`);
 		for (const p of problems) console.warn(`  - ${p}`);

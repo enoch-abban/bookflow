@@ -2,8 +2,8 @@ import type { RequestHandler } from './$types';
 import { json, error } from '@sveltejs/kit';
 import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
-import { activityLog, series, stages, tasks, windows } from '#lib/server/db/schema.ts';
-import { asc, eq } from 'drizzle-orm';
+import { activityLog, books, bookStageSkips, dependencies, printRecords, series, stages, taskAssignees, tasks, windows } from '#lib/server/db/schema.ts';
+import { and, asc, eq, inArray, or } from 'drizzle-orm';
 import { parseBody, resolvePerson } from '#lib/server/api-auth.ts';
 
 type Body = { batchId: string; seriesId: string };
@@ -45,7 +45,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	// A task can appear more than once in a batch (e.g. an overflow switch, then its refit):
 	// each field is restored from the earliest entry that recorded it, and the task must
 	// still be at the version its last entry produced.
-	const taskEntries = entries.filter(e => e.entity === 'task' && e.beforeJson);
+	// Rows the batch created or deleted outright are handled separately below.
+	const taskEntries = entries.filter(e => e.entity === 'task' && e.beforeJson && e.action !== 'delete');
 	const perTask = new Map<string, { before: Record<string, unknown>; expectedVersion: number }>();
 	for (const entry of taskEntries) {
 		const before = JSON.parse(entry.beforeJson!);
@@ -96,8 +97,44 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		}
 	}
 
-	if (conflicting.length > 0 || seriesConflicts.length > 0 || windowConflicts.length > 0) {
-		return json({ error: 'conflict', taskIds: conflicting, seriesFields: seriesConflicts, windowIds: windowConflicts }, { status: 409 });
+	// A book the batch added can only go while it and its tasks are untouched, and no task
+	// of another book has been linked to it since.
+	const bookCreates = entries.filter(e => e.entity === 'book' && e.action === 'create');
+	const bookConflicts: string[] = [];
+	const createdBookTasks = new Map<string, string[]>();
+	for (const entry of bookCreates) {
+		const book = await db.select().from(books).where(eq(books.id, entry.entityId)).then(r => r[0]);
+		if (!book) continue;
+		const own = await db.select({ id: tasks.id, version: tasks.version }).from(tasks).where(eq(tasks.bookId, book.id));
+		const ids = own.map(t => t.id);
+		createdBookTasks.set(book.id, ids);
+		const links = ids.length
+			? await db.select().from(dependencies).where(or(inArray(dependencies.predecessorId, ids), inArray(dependencies.successorId, ids)))
+			: [];
+		if (book.version !== 1 || own.some(t => t.version !== 1) || links.some(d => !ids.includes(d.predecessorId) || !ids.includes(d.successorId)))
+			bookConflicts.push(book.code);
+	}
+
+	// Tasks, dependencies and skips the batch created or deleted (skipping a stage, lifting
+	// a skip, adding a dependency). Deleted rows come back; created ones go, provided a
+	// created task is still untouched and a deleted one has not reappeared.
+	const ROW_ENTITIES = ['task', 'dependency', 'skip'];
+	const rowDeletes = entries.filter(e => ROW_ENTITIES.includes(e.entity) && e.action === 'delete' && e.beforeJson);
+	const rowCreates = entries.filter(e => ROW_ENTITIES.includes(e.entity) && e.action === 'create' && e.afterJson);
+	for (const entry of rowDeletes.filter(e => e.entity === 'task')) {
+		const back = await db.select({ id: tasks.id }).from(tasks).where(eq(tasks.id, entry.entityId));
+		if (back.length) conflicting.push(entry.entityId);
+	}
+	for (const entry of rowCreates.filter(e => e.entity === 'task')) {
+		const current = await db.select({ version: tasks.version }).from(tasks).where(eq(tasks.id, entry.entityId)).then(r => r[0]);
+		if (current && current.version !== 1) conflicting.push(entry.entityId);
+	}
+
+	if (conflicting.length > 0 || seriesConflicts.length > 0 || windowConflicts.length > 0 || bookConflicts.length > 0) {
+		return json({
+			error: 'conflict', taskIds: conflicting, seriesFields: seriesConflicts, windowIds: windowConflicts, books: bookConflicts,
+			message: bookConflicts.length ? `${bookConflicts.join(', ')} changed after it was added; it can no longer be undone.` : undefined,
+		}, { status: 409 });
 	}
 
 	const now       = new Date().toISOString();
@@ -120,6 +157,34 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			if (before && !after) await tx.insert(windows).values(before);
 			if (before && after) await tx.update(windows).set({ label: before.label, startDate: before.startDate, endDate: before.endDate }).where(eq(windows.id, before.id));
 			if (before) await logWindow(tx, entry.entityId, after, before);
+		}
+
+		// Deleted rows come back: tasks (with assignees) first, then their links and skips.
+		const logRow = (entity: 'task' | 'dependency' | 'skip', entityId: string, from: unknown, to: unknown) =>
+			tx.insert(activityLog).values({
+				id: ulid(), seriesId: batchSeriesId, actorId: personId, entity, entityId, action: 'undo',
+				beforeJson: from ? JSON.stringify(from) : null, afterJson: to ? JSON.stringify(to) : null,
+				batchId: undoBatch, createdAt: now,
+			});
+		const deletedDeps: (typeof dependencies.$inferSelect)[] = [];
+		for (const entry of rowDeletes) {
+			const before = JSON.parse(entry.beforeJson!);
+			if (entry.entity === 'task') {
+				await tx.insert(tasks).values(before.task);
+				if (before.assignees?.length) await tx.insert(taskAssignees).values(before.assignees);
+				deletedDeps.push(...(before.dependencies ?? []));
+				await logRow('task', entry.entityId, null, before.task);
+			} else if (entry.entity === 'dependency') {
+				deletedDeps.push(before);
+			} else {
+				await tx.insert(bookStageSkips).values(before).onConflictDoNothing();
+				await logRow('skip', entry.entityId, null, before);
+			}
+		}
+		const createdDepIds = new Set<string>(rowCreates.filter(e => e.entity === 'dependency').map(e => JSON.parse(e.afterJson!).id).filter(Boolean));
+		for (const dep of deletedDeps) {
+			await tx.insert(dependencies).values(dep).onConflictDoNothing();
+			await logRow('dependency', dep.id, null, dep);
 		}
 
 		for (const entry of seriesEntries) {
@@ -162,6 +227,43 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			});
 
 			restored.push({ id: taskId, ...restoreFields });
+		}
+
+		// Created rows go: links first, then tasks (with anything linked to them), then skips.
+		for (const id of createdDepIds) {
+			const dep = await tx.select().from(dependencies).where(eq(dependencies.id, id)).then(r => r[0]);
+			if (!dep) continue;
+			await tx.delete(dependencies).where(eq(dependencies.id, id));
+			await logRow('dependency', id, dep, null);
+		}
+		for (const entry of rowCreates.filter(e => e.entity === 'task')) {
+			const task = await tx.select().from(tasks).where(eq(tasks.id, entry.entityId)).then(r => r[0]);
+			if (!task) continue;
+			await tx.delete(dependencies).where(or(eq(dependencies.predecessorId, task.id), eq(dependencies.successorId, task.id)));
+			await tx.delete(taskAssignees).where(eq(taskAssignees.taskId, task.id));
+			await tx.delete(tasks).where(eq(tasks.id, task.id));
+			await logRow('task', task.id, task, null);
+		}
+		for (const entry of rowCreates.filter(e => e.entity === 'skip')) {
+			const skip = JSON.parse(entry.afterJson!);
+			await tx.delete(bookStageSkips).where(and(eq(bookStageSkips.bookId, skip.bookId), eq(bookStageSkips.stageId, skip.stageId)));
+			await logRow('skip', entry.entityId, skip, null);
+		}
+
+		// Books the batch added go, with everything created for them.
+		for (const [bookId, ids] of createdBookTasks) {
+			if (ids.length) {
+				await tx.delete(dependencies).where(or(inArray(dependencies.predecessorId, ids), inArray(dependencies.successorId, ids)));
+				await tx.delete(taskAssignees).where(inArray(taskAssignees.taskId, ids));
+				await tx.delete(tasks).where(inArray(tasks.id, ids));
+			}
+			await tx.delete(bookStageSkips).where(eq(bookStageSkips.bookId, bookId));
+			await tx.delete(printRecords).where(eq(printRecords.bookId, bookId));
+			await tx.delete(books).where(eq(books.id, bookId));
+			await tx.insert(activityLog).values({
+				id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'book', entityId: bookId, action: 'undo',
+				beforeJson: JSON.stringify({ tasks: ids.length }), batchId: undoBatch, createdAt: now,
+			});
 		}
 
 		// Windows the batch created go last, once no restored task points at them.

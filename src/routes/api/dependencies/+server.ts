@@ -82,7 +82,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			entity:    'dependency',
 			entityId:  depId,
 			action:    'create',
-			afterJson: JSON.stringify({ predecessorId: body.predecessorId, successorId: body.successorId, lagDays: lag }),
+			afterJson: JSON.stringify({ id: depId, predecessorId: body.predecessorId, successorId: body.successorId, lagDays: lag }),
 			batchId,
 			createdAt: now,
 		});

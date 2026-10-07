@@ -380,6 +380,91 @@
 
 	const stageName = $derived(new Map(data.pipeline.stages.map((s) => [s.id, s.name])));
 
+	// Skip a stage for one book, or lift a skip: preview, then confirm.
+	type SkipPreview = {
+		book: string; stage: string;
+		deletesTask?: boolean; relinked?: number;
+		task?: { startDate: string; endDate: string; window: string | null; scheduleState: string };
+		pushed?: { label: string; from: string; to: string; scheduleState: string }[];
+		batchId?: string;
+	};
+	let stagesOpenFor = $state<string | null>(null);
+	let skipPending = $state<{ bookId: string; stageId: string; lift: boolean; preview: SkipPreview } | null>(null);
+
+	async function toggleStage(b: PBook, stageId: string) {
+		const lift = b.skippedStageIds.includes(stageId);
+		busy = true;
+		pipeFlash = null;
+		const res = await api<SkipPreview>(lift ? 'DELETE' : 'PUT', `/api/books/${b.id}/skips/${stageId}`, { preview: true });
+		busy = false;
+		if (!res.ok) return (pipeFlash = { ok: false, text: res.message });
+		skipPending = { bookId: b.id, stageId, lift, preview: res.data };
+	}
+
+	async function confirmSkip() {
+		if (!skipPending) return;
+		const { bookId, stageId, lift, preview: p } = skipPending;
+		const result = await pipeCall(lift ? 'DELETE' : 'PUT', `/api/books/${bookId}/skips/${stageId}`, {},
+			lift ? `Added ${p.stage} to ${p.book}.` : `${p.book} now skips ${p.stage}.`);
+		if (!result) return;
+		skipPending = null;
+		lastPipeBatch = (result as unknown as SkipPreview).batchId ?? null;
+	}
+
+	// Add a book: preview its schedule, then confirm.
+	type AddBookPreview = {
+		tasks: { stage: string; startDate: string; endDate: string; window: string | null; scheduleState: string; assignees: number }[];
+		skips: string[];
+		dependencies: number;
+		late: number;
+		batchId?: string;
+	};
+	function nextWorkingDayFrom(iso: string) {
+		const t = Date.parse(iso + 'T12:00:00Z');
+		for (let d = t + DAY_MS; ; d += DAY_MS) {
+			const dow = new Date(d).getUTCDay();
+			if (dow !== 0 && dow !== 6) return new Date(d).toISOString().slice(0, 10);
+		}
+	}
+	const blankBook = () => ({
+		code: '', name: '', trackId: data.pipeline.tracks[0]?.id ?? '', groupLabel: '', batch: null as number | null,
+		mode: 'like' as 'like' | 'date', likeBookId: '', fromDate: nextWorkingDayFrom(new Date().toISOString().slice(0, 10)),
+		include: {} as Record<string, boolean>
+	});
+	let newBook = $state(blankBook());
+	let bookPreview = $state<AddBookPreview | null>(null);
+	const newBookStages = $derived(data.pipeline.tracks.find((t) => t.id === newBook.trackId)?.stageIds ?? []);
+	const siblings = $derived(data.pipeline.books.filter((b) => b.trackId === newBook.trackId));
+
+	function addBookBody() {
+		const schedule = newBook.mode === 'like'
+			? { likeBookId: newBook.likeBookId }
+			: { fromDate: newBook.fromDate, skipStageIds: newBookStages.filter((id) => newBook.include[id] === false) };
+		return {
+			code: newBook.code.trim(), name: newBook.name.trim(), trackId: newBook.trackId,
+			groupLabel: newBook.groupLabel.trim() || null, batch: newBook.batch ? Number(newBook.batch) : null, schedule
+		};
+	}
+
+	async function previewBook(e: SubmitEvent) {
+		e.preventDefault();
+		busy = true;
+		pipeFlash = null;
+		const res = await api<AddBookPreview>('POST', `/api/series/${data.series.id}/books`, { ...addBookBody(), preview: true });
+		busy = false;
+		if (!res.ok) return (pipeFlash = { ok: false, text: res.message });
+		bookPreview = res.data;
+	}
+
+	async function confirmBook() {
+		const code = newBook.code.trim();
+		const result = await pipeCall('POST', `/api/series/${data.series.id}/books`, addBookBody(), `Added ${code}.`);
+		if (!result) return;
+		bookPreview = null;
+		lastPipeBatch = (result as unknown as AddBookPreview).batchId ?? null;
+		newBook = blankBook();
+	}
+
 	// ── Team ────────────────────────────────────────────────────────────────
 	type Draft = { role: string; teamLabel: string; capacity: number };
 	const toDraft = (m: Member): Draft => ({ role: m.role, teamLabel: m.teamLabel ?? '', capacity: m.capacity });
@@ -852,20 +937,148 @@
 								<td class="muted">{b.trackName}</td>
 								<td class="num">{b.taskCount}</td>
 								<td class="right">
-									{#if bookDirty(b)}
-										<div class="actions">
+									<div class="actions">
+										{#if bookDirty(b)}
 											<button class="btn btn-primary" disabled={busy} onclick={() => saveBook(b)}>Save</button>
 											<button class="btn btn-ghost" onclick={() => (bookDrafts[b.id] = bookDraft(b))}>Undo</button>
-										</div>
-									{/if}
+										{/if}
+										<button class="btn btn-ghost" aria-expanded={stagesOpenFor === b.id}
+											onclick={() => { stagesOpenFor = stagesOpenFor === b.id ? null : b.id; skipPending = null; }}>Stages</button>
+									</div>
 								</td>
 							</tr>
+							{#if stagesOpenFor === b.id}
+								{@const trackStageIds = data.pipeline.tracks.find((t) => t.id === b.trackId)?.stageIds ?? []}
+								<tr class="expand">
+									<td colspan="8">
+										<p class="hint">Stages {b.code} has. Click one to skip it for this book, or to add a skipped one back.</p>
+										<div class="stage-chips">
+											{#each trackStageIds as sid (sid)}
+												{@const skipped = b.skippedStageIds.includes(sid)}
+												<button class="stage-chip" class:skipped disabled={busy || !!skipPending}
+													title={skipped ? 'Skipped: click to add it back' : 'Click to skip for this book'}
+													onclick={() => toggleStage(b, sid)}>{stageName.get(sid)}</button>
+											{/each}
+										</div>
+										{#if skipPending?.bookId === b.id}
+											{@const p = skipPending.preview}
+											<div class="impact" role="alertdialog" aria-label="Confirm stage change">
+												{#if skipPending.lift}
+													<p>
+														<strong>Add {p.stage} to {p.book}:</strong>
+														{p.task ? `${fmtDate(p.task.startDate)} → ${fmtDate(p.task.endDate)}` : ''}
+														{p.task?.scheduleState === 'unscheduled' ? '(unscheduled: no window has room)' : p.task?.window ? `(${p.task.window})` : ''}.
+														{#if p.pushed?.length}It pushes {plural(p.pushed.length, 'task', 'tasks')}:{/if}
+													</p>
+													{#if p.pushed?.length}
+														<ul class="impact-list">
+															{#each p.pushed.slice(0, 6) as x (x.label)}<li>{x.label}: {fmtDate(x.from)} → {fmtDate(x.to)}</li>{/each}
+														</ul>
+													{/if}
+												{:else}
+													<p>
+														<strong>Skip {p.stage} for {p.book}.</strong>
+														{p.deletesTask ? `Its task is removed${p.relinked ? ` and ${plural(p.relinked, 'dependency is', 'dependencies are')} relinked around it` : ''}.` : 'It has no task yet.'}
+													</p>
+												{/if}
+												<div class="form-foot">
+													<button type="button" class="btn btn-ghost btn-lg" onclick={() => (skipPending = null)}>Cancel</button>
+													<button type="button" class="btn btn-primary btn-lg" disabled={busy} onclick={confirmSkip}>
+														{skipPending.lift ? 'Add stage' : 'Skip stage'}
+													</button>
+												</div>
+											</div>
+										{/if}
+									</td>
+								</tr>
+							{/if}
 						{/if}
 					{/each}
 				</tbody>
 			</table>
 		</div>
-		<p class="hint">Adding, removing or skipping stages and books, and moving a book to another track, come next.</p>
+		<form class="add-member" onsubmit={previewBook}>
+			<h3>Add a book</h3>
+			<div class="add-fields">
+				<label class="field">
+					<span>Code</span>
+					<input class="input code" bind:value={newBook.code} maxlength="20" placeholder="e.g. G6B" required />
+				</label>
+				<label class="field grow">
+					<span>Name</span>
+					<input class="input" bind:value={newBook.name} maxlength="120" required />
+				</label>
+				<label class="field">
+					<span>Track</span>
+					<select class="input" bind:value={newBook.trackId} onchange={() => { newBook.likeBookId = ''; newBook.include = {}; bookPreview = null; }}>
+						{#each data.pipeline.tracks as t (t.id)}<option value={t.id}>{t.name}</option>{/each}
+					</select>
+				</label>
+				<label class="field">
+					<span>{data.series.bookGroupLabel}</span>
+					<input class="input" list="group-labels" bind:value={newBook.groupLabel} maxlength="60" />
+				</label>
+				<label class="field">
+					<span>Batch</span>
+					<input class="input days" type="number" min="1" max="99" bind:value={newBook.batch} />
+				</label>
+			</div>
+
+			<div class="seg" role="radiogroup" aria-label="How to schedule it">
+				<label><input type="radio" bind:group={newBook.mode} value="like" onchange={() => (bookPreview = null)} /> Like another book</label>
+				<label><input type="radio" bind:group={newBook.mode} value="date" onchange={() => (bookPreview = null)} /> From a date</label>
+			</div>
+
+			{#if newBook.mode === 'like'}
+				<label class="field">
+					<span>Copy dates, windows, skips and assignees from <span class="hint">same track only</span></span>
+					<select class="input" bind:value={newBook.likeBookId} required>
+						<option value="" disabled>Choose a book…</option>
+						{#each siblings as b (b.id)}<option value={b.id}>{b.code} · {b.name}</option>{/each}
+					</select>
+				</label>
+			{:else}
+				<div class="add-fields">
+					<label class="field">
+						<span>Start no earlier than</span>
+						<input class="input" type="date" bind:value={newBook.fromDate} required />
+					</label>
+				</div>
+				<fieldset class="stage-picks">
+					<legend>Stages this book has <span class="hint">untick to skip</span></legend>
+					{#each newBookStages as sid (sid)}
+						<label><input type="checkbox" checked={newBook.include[sid] !== false} onchange={(e) => (newBook.include[sid] = e.currentTarget.checked)} /> {stageName.get(sid)}</label>
+					{/each}
+				</fieldset>
+			{/if}
+
+			{#if bookPreview}
+				{@const unscheduledCount = bookPreview.tasks.filter((t) => t.scheduleState === 'unscheduled').length}
+				<div class="impact" role="alertdialog" aria-label="Confirm new book">
+					<p>
+						<strong>{newBook.code || 'This book'} gets {plural(bookPreview.tasks.length, 'task', 'tasks')}</strong>
+						and {plural(bookPreview.dependencies, 'dependency', 'dependencies')}{#if bookPreview.skips.length}, skipping {bookPreview.skips.join(', ')}{/if}.
+						{#if unscheduledCount}{plural(unscheduledCount, 'task has', 'tasks have')} no window with room and will be unscheduled.{/if}
+						{#if bookPreview.late}{plural(bookPreview.late, 'task ends', 'tasks end')} before today and will show as Late.{/if}
+					</p>
+					<ul class="impact-list">
+						{#each bookPreview.tasks as t (t.stage)}
+							<li class:warn={t.scheduleState === 'unscheduled'}>
+								{t.stage}: {fmtDate(t.startDate)} → {fmtDate(t.endDate)}
+								{t.scheduleState === 'unscheduled' ? '(unscheduled)' : t.window ? `(${t.window})` : ''}
+							</li>
+						{/each}
+					</ul>
+					<div class="form-foot">
+						<button type="button" class="btn btn-ghost btn-lg" onclick={() => (bookPreview = null)}>Cancel</button>
+						<button type="button" class="btn btn-primary btn-lg" disabled={busy} onclick={confirmBook}>Add book</button>
+					</div>
+				</div>
+			{:else}
+				<div class="form-foot"><button class="btn btn-primary btn-lg" disabled={busy}>Preview</button></div>
+			{/if}
+		</form>
+		<p class="hint">Adding and removing stages, removing books, and moving a book to another track come next.</p>
 	</section>
 
 	<!-- Team ────────────────────────────────────────────────────────────── -->
@@ -1031,6 +1244,13 @@
 	td.check { text-align: center; padding-top: 14px; }
 	td.check input { accent-color: var(--primary); width: 16px; height: 16px; }
 	.deadline { min-width: 180px; }
+	.stage-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: var(--sp-2) 0; }
+	.stage-chip { font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--primary); background: var(--primary-subtle); color: var(--primary-subtle-foreground); }
+	.stage-chip.skipped { border-style: dashed; border-color: var(--border); background: transparent; color: var(--muted-foreground); text-decoration: line-through; }
+	.stage-chip:disabled { opacity: 0.6; cursor: default; }
+	.stage-picks { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--sp-2) var(--sp-3); display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-4); font-size: 13px; }
+	.stage-picks legend { font-size: 13px; font-weight: 500; padding: 0 var(--sp-1); }
+	.stage-picks input { accent-color: var(--primary); }
 	.dl-amount { display: flex; align-items: center; gap: 4px; margin-top: 4px; font-size: 12px; color: var(--muted-foreground); }
 	.empty { text-align: center; color: var(--muted-foreground); padding: var(--sp-6); }
 	.add-member h3 { margin-bottom: var(--sp-1); }

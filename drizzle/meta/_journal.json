@@ -15,6 +15,13 @@
       "when": 1791294930131,
       "tag": "0001_window_overflow",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1791376505103,
+      "tag": "0002_pipeline_structure",
+      "breakpoints": true
     }
   ]
 }

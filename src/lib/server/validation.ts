@@ -119,3 +119,16 @@ export const updateBookSchema = z
 	.refine(someField, 'Nothing to update.');
 
 export const orderSchema = z.object({ ids: z.array(z.string().min(1)).min(1) });
+
+export const addBookSchema = z.object({
+	code: z.string().trim().min(1, 'Enter a book code.').max(20),
+	name: z.string().trim().min(1, 'Enter a book name.').max(120),
+	trackId: z.string().min(1, 'Choose a track.'),
+	groupLabel: z.string().trim().max(60).nullable().optional().transform((v) => v || null),
+	batch: z.number().int().min(1).max(99).nullable().optional(),
+	schedule: z.union([
+		z.object({ likeBookId: z.string().min(1) }),
+		z.object({ fromDate: isoDate.optional(), skipStageIds: z.array(z.string()).optional() })
+	]),
+	preview: z.boolean().optional()
+});

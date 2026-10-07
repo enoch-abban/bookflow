@@ -64,7 +64,8 @@ export const stages = sqliteTable(
 		isReview: integer('is_review').notNull().default(0),
 		isExternal: integer('is_external').notNull().default(0),
 		ignoresWindows: integer('ignores_windows').notNull().default(0),
-		deadlineRule: text('deadline_rule') // JSON e.g. {"after":"isbn_issued","months":2}
+		deadlineRule: text('deadline_rule'), // JSON e.g. {"after":"isbn_issued","months":2}
+		archivedAt: text('archived_at') // set on removal when Done tasks keep history
 	},
 	(t) => [index('idx_stages_series').on(t.seriesId)]
 );
@@ -97,9 +98,39 @@ export const books = sqliteTable(
 		edition: text('edition'),
 		batch: integer('batch'),
 		sortOrder: integer('sort_order').notNull(),
-		version: integer('version').notNull().default(1)
+		version: integer('version').notNull().default(1),
+		archivedAt: text('archived_at') // set instead of deleting once work has started
 	},
 	(t) => [index('idx_books_series').on(t.seriesId)]
+);
+
+// The series' default dependency pattern, applied when tasks are created.
+export const stageLinks = sqliteTable(
+	'stage_links',
+	{
+		fromStageId: text('from_stage_id')
+			.notNull()
+			.references(() => stages.id, { onDelete: 'cascade' }),
+		toStageId: text('to_stage_id')
+			.notNull()
+			.references(() => stages.id, { onDelete: 'cascade' }),
+		lagDays: integer('lag_days').notNull().default(0)
+	},
+	(t) => [primaryKey({ columns: [t.fromStageId, t.toStageId] })]
+);
+
+// Stages a book deliberately does not have.
+export const bookStageSkips = sqliteTable(
+	'book_stage_skips',
+	{
+		bookId: text('book_id')
+			.notNull()
+			.references(() => books.id, { onDelete: 'cascade' }),
+		stageId: text('stage_id')
+			.notNull()
+			.references(() => stages.id, { onDelete: 'cascade' })
+	},
+	(t) => [primaryKey({ columns: [t.bookId, t.stageId] })]
 );
 
 // ── People, membership, invites ─────────────────────────────────────────────
@@ -331,7 +362,7 @@ export const activityLog = sqliteTable(
 		actorId: text('actor_id'),
 		entity: text('entity', {
 			enum: [
-				'series', 'template', 'track', 'stage', 'book', 'task', 'dependency',
+				'series', 'template', 'track', 'stage', 'stage_link', 'skip', 'book', 'task', 'dependency',
 				'window', 'holiday', 'member', 'person', 'invite', 'review',
 				'approval', 'print_record', 'comment', 'baseline'
 			]
