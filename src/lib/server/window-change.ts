@@ -11,7 +11,7 @@ import { activityLog, windows } from '#lib/server/db/schema.ts';
 import { loadSeriesContext } from './series-context.ts';
 import { refit, type RefitResult } from './refit.ts';
 import { refitChanges, refitReport, writeTaskChanges, type TaskChange, type Tx } from './schedule-write.ts';
-import { overlapping, sortWindows } from './windows.ts';
+import { overlapping, sortWindows } from '../schedule/windows.ts';
 
 type WindowRow = typeof windows.$inferSelect;
 type WindowFields = Pick<WindowRow, 'label' | 'startDate' | 'endDate'>;

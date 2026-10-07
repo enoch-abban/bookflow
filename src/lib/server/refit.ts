@@ -5,7 +5,7 @@ import {
 	buildPredMap, earliestStart, fitsWindowFor, isFrozen, isWindowed, settle,
 	type Placement, type SchedDep, type SchedTask, type WindowRules
 } from './scheduler.ts';
-import { windowAt } from './windows.ts';
+import { windowAt } from '../schedule/windows.ts';
 
 export type RefitKind = 'moved' | 'unscheduled' | 'placed' | 'window';
 

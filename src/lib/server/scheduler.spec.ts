@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { deriveEnd, nextWorkingDay, propagate, settle, type SchedTask, type WindowRules } from './scheduler.ts';
-import { latestEnd, overlapping, placeInWindows, sortWindows, type Win } from './windows.ts';
+import { latestEnd, overlapping, placeInWindows, sortWindows, type Win } from '../schedule/windows.ts';
 import { refit } from './refit.ts';
 
 // October 2026: the 12th is a Monday.

@@ -7,7 +7,7 @@ import { db } from '#lib/server/db/index.ts';
 import { books, tasks, dependencies, series, stages, windows } from '#lib/server/db/schema.ts';
 import { asc, eq, inArray } from 'drizzle-orm';
 import type { SchedTask, SchedDep, WindowRules } from './scheduler.ts';
-import type { Win } from './windows.ts';
+import type { Win } from '../schedule/windows.ts';
 
 export type SeriesContext = Awaited<ReturnType<typeof loadSeriesContext>>;
 

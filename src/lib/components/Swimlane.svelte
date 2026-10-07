@@ -1,4 +1,7 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
+	import { latestEnd, sortWindows, windowAt } from '#lib/schedule/windows.ts';
+
 	// ── Types ─────────────────────────────────────────────────────────────────
 
 	type Series = {
@@ -9,8 +12,9 @@
 		hardLimitDate: string | null;
 		enforceWindows: number;
 		strictMode: number;
+		windowOverflowDays: number;
 	};
-	type Stage = { id: string; key: string; name: string; category: string };
+	type Stage = { id: string; key: string; name: string; category: string; ignoresWindows: number };
 	type Book = {
 		id: string;
 		code: string;
@@ -29,6 +33,10 @@
 		title: string;
 		iteration: number;
 		version: number;
+		windowId: string | null;
+		scheduleState: 'scheduled' | 'unscheduled';
+		overflowAllowed: number;
+		statusBeforeBlock: string | null;
 	};
 	type Assignee = { taskId: string; personId: string; isLead: number };
 	type Dep = { id: string; predecessorId: string; successorId: string; lagDays: number };
@@ -174,6 +182,51 @@
 
 	const workingDays = $derived(calDays.filter((d) => !d.isWeekend));
 
+	// ── Window rules (shared with the server: #lib/schedule) ────────────────────
+
+	const sortedWins = $derived(sortWindows(windowsProp));
+	const winById = $derived(new Map(windowsProp.map((w) => [w.id, w])));
+
+	const STARTED = ['in_progress', 'in_review', 'returned'];
+	function isStarted(t: Task) {
+		return t.status === 'done' || STARTED.includes(t.status) ||
+			(t.status === 'blocked' && !!t.statusBeforeBlock && STARTED.includes(t.statusBeforeBlock));
+	}
+
+	/** Window rules apply: enforced series, windowed stage, not a gate. */
+	function isWindowed(t: Task) {
+		return !!series.enforceWindows && !stageMap.get(t.stageId)?.ignoresWindows && t.durationDays > 0;
+	}
+
+	/** Latest end allowed for a task starting on `start`, or null when no window holds that date. */
+	function allowedEnd(start: string, overflow: boolean): string | null {
+		const w = windowAt(start, sortedWins);
+		return w ? latestEnd(w, sortedWins, overflow ? series.windowOverflowDays : 0) : null;
+	}
+
+	function fits(t: Task, start: string, end: string, overflow = !!t.overflowAllowed) {
+		if (!isWindowed(t)) return true;
+		const limit = allowedEnd(start, overflow);
+		return !!limit && end <= limit;
+	}
+
+	function countWorkingDays(afterDate: string, uptoDate: string) {
+		return workingDays.filter((d) => d.date > afterDate && d.date <= uptoDate).length;
+	}
+
+	/** The part of a bar past its window's edge: drawn faded, with a "+Nd" badge. */
+	function overflowOf(t: Task): { edgeX: number; days: number } | null {
+		if (!isWindowed(t) || t.scheduleState === 'unscheduled') return null;
+		const w = (t.windowId && winById.get(t.windowId)) || windowAt(t.startDate, sortedWins);
+		if (!w || t.endDate <= w.endDate) return null;
+		return { edgeX: (dateX.get(w.endDate) ?? 0) + DAY_W, days: countWorkingDays(w.endDate, t.endDate) };
+	}
+
+	/** Started task that no longer fits its window after a window change. */
+	function isOutsideWindow(t: Task) {
+		return t.status !== 'done' && isStarted(t) && isWindowed(t) && t.scheduleState === 'scheduled' && !fits(t, t.startDate, t.endDate);
+	}
+
 	// Snap x-coord to nearest working-day left edge
 	function snapX(x: number): string | null {
 		let best: string | null = null;
@@ -191,30 +244,42 @@
 
 	// ── Lanes ─────────────────────────────────────────────────────────────────
 
-	type Lane = { id: string; label: string; sublabel?: string; groupLabel?: string; tasks: Task[] };
+	type Lane = { id: string; label: string; sublabel?: string; groupLabel?: string; tasks: Task[]; overflow?: boolean };
+
+	// Unscheduled tasks (no window had room) are parked in an overflow lane at the bottom.
+	const unscheduled = $derived(localTasks.filter((t) => t.scheduleState === 'unscheduled'));
 
 	const lanes = $derived.by((): Lane[] => {
-		if (laneMode === 'book') {
-			return booksProp.map((b) => ({
+		const placed = localTasks.filter((t) => t.scheduleState !== 'unscheduled');
+		const main: Lane[] = laneMode === 'book'
+			? booksProp.map((b) => ({
 				id: b.id,
 				label: b.code,
 				sublabel: b.name,
 				groupLabel: b.groupLabel ?? undefined,
-				tasks: localTasks.filter((t) => t.bookId === b.id)
-			}));
-		}
-		// By person: sort by teamLabel, then displayName
-		return [...members]
-			.sort((a, b) => (a.teamLabel ?? '').localeCompare(b.teamLabel ?? ''))
-			.map((m) => {
-				const person = personMap.get(m.personId);
-				return {
-					id: m.personId,
-					label: person?.displayName ?? m.personId,
-					groupLabel: m.teamLabel ?? undefined,
-					tasks: localTasks.filter((t) => leadMap.get(t.id) === m.personId)
-				};
-			});
+				tasks: placed.filter((t) => t.bookId === b.id)
+			}))
+			// By person: sort by teamLabel, then displayName
+			: [...members]
+				.sort((a, b) => (a.teamLabel ?? '').localeCompare(b.teamLabel ?? ''))
+				.map((m) => {
+					const person = personMap.get(m.personId);
+					return {
+						id: m.personId,
+						label: person?.displayName ?? m.personId,
+						groupLabel: m.teamLabel ?? undefined,
+						tasks: placed.filter((t) => leadMap.get(t.id) === m.personId)
+					};
+				});
+		if (!unscheduled.length) return main;
+		return [...main, {
+			id: '__unscheduled',
+			label: 'Unscheduled',
+			sublabel: `${unscheduled.length} waiting for a window`,
+			groupLabel: 'Overflow lane',
+			tasks: unscheduled,
+			overflow: true
+		}];
 	});
 
 	// task → lane row index (0-based)
@@ -250,13 +315,15 @@
 			const r1 = taskRow.get(pred.id);
 			const r2 = taskRow.get(succ.id);
 			if (r1 === undefined || r2 === undefined) return [];
+			// A task's successor starts the working day after it ends; a gate's may start the same day.
+			const violated = pred.durationDays === 0 ? succ.startDate < pred.endDate : succ.startDate <= pred.endDate;
 			return [
 				{
 					x1: barRight(pred),
 					y1: r1 * ROW_H + ROW_H / 2,
 					x2: barLeft(succ),
 					y2: r2 * ROW_H + ROW_H / 2,
-					violated: succ.startDate < pred.endDate
+					violated
 				}
 			];
 		});
@@ -279,6 +346,15 @@
 	};
 	let drag: DragState | null = $state(null);
 	let outerEl: HTMLElement | undefined = $state();
+
+	// Message from the server when a save is refused (window rule, stale version).
+	let notice = $state<string | null>(null);
+	let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+	function showNotice(text: string) {
+		notice = text;
+		clearTimeout(noticeTimer);
+		noticeTimer = setTimeout(() => (notice = null), 5000);
+	}
 
 	function clientToCanvasX(clientX: number): number {
 		if (!outerEl) return 0;
@@ -312,22 +388,27 @@
 		if (eIdx >= workingDays.length) return;
 		const newStart = workingDays[sIdx].date;
 		const newEnd = workingDays[eIdx].date;
-		localTasks = localTasks.map((t) =>
-			t.id === drag!.taskId ? { ...t, startDate: newStart, endDate: newEnd } : t
+		const t = localTasks.find((x) => x.id === drag!.taskId);
+		// The bar moves within its window, or into another one, but cannot straddle an
+		// edge beyond its overflow allowance: positions that don't fit are skipped.
+		if (!t || !fits(t, newStart, newEnd)) return;
+		localTasks = localTasks.map((x) =>
+			x.id === drag!.taskId ? { ...x, startDate: newStart, endDate: newEnd } : x
 		);
 	}
 
-	async function onPointerUp() {
-		if (!drag) return;
-		const d = drag;
-		drag = null; // clear immediately so $effect re-sync doesn't fire mid-save
+	type Orig = { startDate: string; endDate: string; durationDays: number };
 
-		// Find the task's current optimistic state
-		const moved = localTasks.find((t) => t.id === d.taskId);
-		if (!moved || (moved.startDate === d.origStart && moved.endDate === d.origEnd)) return;
+	function revert(taskId: string, orig: Orig) {
+		localTasks = localTasks.map((t) => (t.id === taskId ? { ...t, ...orig } : t));
+	}
 
+	/** Save a move or resize; merge the moved task and everything it pushed, or revert. */
+	async function saveSchedule(taskId: string, orig: Orig) {
+		const moved = localTasks.find((t) => t.id === taskId);
+		if (!moved) return;
 		try {
-			const res = await fetch(`/api/tasks/${d.taskId}/schedule`, {
+			const res = await fetch(`/api/tasks/${taskId}/schedule`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
@@ -336,40 +417,52 @@
 					version: moved.version
 				})
 			});
-
+			const body = await res.json().catch(() => ({}));
 			if (res.ok) {
-				const { changed } = (await res.json()) as { changed: Task[] };
+				const changed = body.changed as Partial<Task>[];
 				// Merge server response (includes propagated tasks)
 				localTasks = localTasks.map((t) => {
-					const sv = changed.find((c: Task) => c.id === t.id);
+					const sv = changed.find((c) => c.id === t.id);
 					return sv ? { ...t, ...sv } : t;
 				});
 			} else {
-				// Version conflict (409) or window violation (422): revert this task
-				localTasks = localTasks.map((t) =>
-					t.id === d.taskId
-						? { ...t, startDate: d.origStart, endDate: d.origEnd, durationDays: d.durationDays }
-						: t
-				);
+				// Window violation (422) or version conflict (409): revert and say why
+				revert(taskId, orig);
+				showNotice(body.message ?? (res.status === 409 ? 'Someone else changed this task. Reload to see it.' : 'That change could not be saved.'));
 			}
 		} catch {
 			// Network error: revert
-			localTasks = localTasks.map((t) =>
-				t.id === d.taskId
-					? { ...t, startDate: d.origStart, endDate: d.origEnd, durationDays: d.durationDays }
-					: t
-			);
+			revert(taskId, orig);
+			showNotice('Could not reach the server. The change was not saved.');
 		}
+	}
+
+	async function onPointerUp() {
+		if (!drag) return;
+		const d = drag;
+		drag = null; // clear immediately so $effect re-sync doesn't fire mid-save
+
+		const moved = localTasks.find((t) => t.id === d.taskId);
+		if (!moved || (moved.startDate === d.origStart && moved.endDate === d.origEnd)) return;
+		await saveSchedule(d.taskId, { startDate: d.origStart, endDate: d.origEnd, durationDays: d.durationDays });
 	}
 
 	// ── Resize ────────────────────────────────────────────────────────────────
 
-	type ResizeState = { taskId: string; edge: 'left' | 'right'; origStart: string; origEnd: string };
+	type ResizeState = { taskId: string; edge: 'left' | 'right'; origStart: string; origEnd: string; origDuration: number };
 	let resizing: ResizeState | null = $state(null);
 
-	// Re-sync local tasks from prop when idle (e.g., on server-side reload)
+	// Pulling an ordinary task past its window's edge asks whether to allow overflow for it.
+	let overflowAsk = $state<{ task: Task; orig: Orig; days: number; windowLabel: string } | null>(null);
+
+	// Re-sync local tasks when the server sends new data (e.g. a reload), unless an edit is
+	// in progress. Only the prop is tracked: finishing a drag must not reset the bars to
+	// the dates loaded with the page.
 	$effect(() => {
-		if (!drag && !resizing) localTasks = [...tasksProp];
+		const fresh = tasksProp;
+		untrack(() => {
+			if (!drag && !resizing && !overflowAsk) localTasks = [...fresh];
+		});
 	});
 
 	// Poll for other users' changes every 10 seconds
@@ -399,26 +492,30 @@
 	function onEdgeDown(e: PointerEvent, task: Task, edge: 'left' | 'right') {
 		e.stopPropagation();
 		e.preventDefault();
-		resizing = { taskId: task.id, edge, origStart: task.startDate, origEnd: task.endDate };
+		resizing = { taskId: task.id, edge, origStart: task.startDate, origEnd: task.endDate, origDuration: task.durationDays };
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 	}
 
 	function onEdgeMove(e: PointerEvent) {
 		if (!resizing) return;
 		const cx = clientToCanvasX(e.clientX);
-		const snapped = snapX(cx);
+		// A bar's right edge sits one day-width after its end date's left edge.
+		const snapped = snapX(resizing.edge === 'right' ? cx - DAY_W : cx);
 		if (!snapped) return;
+		// Up to the window's edge, or into the next window as far as the series' overflow
+		// allowance; an ordinary task is asked about overflow when released past the edge.
+		const mayOverflow = series.windowOverflowDays > 0;
 		localTasks = localTasks.map((t) => {
 			if (t.id !== resizing!.taskId) return t;
 			if (resizing!.edge === 'left') {
-				if (snapped >= t.endDate) return t;
+				if (snapped >= t.endDate || !fits(t, snapped, t.endDate, mayOverflow)) return t;
 				const dur =
 					workingDays.findIndex((d) => d.date === t.endDate) -
 					workingDays.findIndex((d) => d.date === snapped) +
 					1;
 				return { ...t, startDate: snapped, durationDays: Math.max(1, dur) };
 			} else {
-				if (snapped <= t.startDate) return t;
+				if (snapped < t.startDate || !fits(t, t.startDate, snapped, mayOverflow)) return t;
 				const dur =
 					workingDays.findIndex((d) => d.date === snapped) -
 					workingDays.findIndex((d) => d.date === t.startDate) +
@@ -435,34 +532,47 @@
 
 		const moved = localTasks.find((t) => t.id === r.taskId);
 		if (!moved || (moved.startDate === r.origStart && moved.endDate === r.origEnd)) return;
+		const orig = { startDate: r.origStart, endDate: r.origEnd, durationDays: r.origDuration };
 
-		try {
-			const res = await fetch(`/api/tasks/${r.taskId}/schedule`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					start: moved.startDate,
-					durationDays: moved.durationDays,
-					version: moved.version
-				})
-			});
-
-			if (res.ok) {
-				const { changed } = (await res.json()) as { changed: Task[] };
-				localTasks = localTasks.map((t) => {
-					const sv = changed.find((c: Task) => c.id === t.id);
-					return sv ? { ...t, ...sv } : t;
-				});
-			} else {
-				localTasks = localTasks.map((t) =>
-					t.id === r.taskId ? { ...t, startDate: r.origStart, endDate: r.origEnd } : t
-				);
-			}
-		} catch {
-			localTasks = localTasks.map((t) =>
-				t.id === r.taskId ? { ...t, startDate: r.origStart, endDate: r.origEnd } : t
-			);
+		const w = isWindowed(moved) ? windowAt(moved.startDate, sortedWins) : null;
+		if (w && !moved.overflowAllowed && moved.endDate > w.endDate) {
+			overflowAsk = { task: moved, orig, days: countWorkingDays(w.endDate, moved.endDate), windowLabel: (w as Window).label };
+			return;
 		}
+		await saveSchedule(r.taskId, orig);
+	}
+
+	async function allowOverflow() {
+		if (!overflowAsk) return;
+		const { task, orig } = overflowAsk;
+		try {
+			const res = await fetch(`/api/tasks/${task.id}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ overflowAllowed: true, version: task.version })
+			});
+			const body = await res.json().catch(() => ({}));
+			if (!res.ok) {
+				overflowAsk = null;
+				revert(task.id, orig);
+				return showNotice(body.message ?? 'Could not allow overflow for this task.');
+			}
+			localTasks = localTasks.map((t) =>
+				t.id === task.id ? { ...t, overflowAllowed: 1, version: body.task.version } : t
+			);
+			overflowAsk = null;
+			await saveSchedule(task.id, orig);
+		} catch {
+			overflowAsk = null;
+			revert(task.id, orig);
+			showNotice('Could not reach the server. The change was not saved.');
+		}
+	}
+
+	function cancelOverflow() {
+		if (!overflowAsk) return;
+		revert(overflowAsk.task.id, overflowAsk.orig);
+		overflowAsk = null;
 	}
 
 	// ── Helpers ───────────────────────────────────────────────────────────────
@@ -514,6 +624,28 @@
 			{/if}
 		</div>
 	</div>
+
+	{#if notice}
+		<div class="sl-notice" role="alert">
+			<span>{notice}</span>
+			<button onclick={() => (notice = null)} aria-label="Dismiss">×</button>
+		</div>
+	{/if}
+
+	{#if overflowAsk}
+		{@const st = stageMap.get(overflowAsk.task.stageId)}
+		<div class="sl-ask" role="alertdialog" aria-label="Allow overflow">
+			<p>
+				<strong>{st?.name ?? 'This task'} · {bookMap.get(overflowAsk.task.bookId)?.code ?? ''}</strong>
+				would run {overflowAsk.days} working {overflowAsk.days === 1 ? 'day' : 'days'} past
+				"{overflowAsk.windowLabel}". Allow it to overflow? It still belongs to that window.
+			</p>
+			<div class="sl-ask-actions">
+				<button class="btn-toggle" onclick={cancelOverflow}>Cancel</button>
+				<button class="btn-toggle on" onclick={allowOverflow}>Allow overflow</button>
+			</div>
+		</div>
+	{/if}
 
 	<!-- Scrollable canvas -->
 	<div
@@ -652,15 +784,23 @@
 									class:cp-dim={isCpFaded}
 								></div>
 							{:else}
+								{@const ovf = overflowOf(task)}
+								{@const outside = isOutsideWindow(task)}
 								<div
 									class="sl-bar {catCls(stage?.category ?? 'creation')} {statusCls(task.status)}"
 									class:cp-dim={isCpFaded}
+									class:sl-bar--outside={outside}
+									class:sl-bar--unscheduled={lane.overflow}
 									style="left:{bx}px;width:{bw}px;top:4px;height:{ROW_H - 8}px"
 									onpointerdown={(e) => onBarDown(e, task)}
 									role="button"
 									tabindex="0"
-									title="{stage?.name ?? ''} · {bookMap.get(task.bookId)?.code ?? ''}"
+									title="{stage?.name ?? ''} · {bookMap.get(task.bookId)?.code ?? ''}{ovf ? ` · overflows ${ovf.days} working day${ovf.days === 1 ? '' : 's'}` : ''}{outside ? ' · Outside window' : ''}{lane.overflow ? ' · Unscheduled: no window has room' : ''}"
 								>
+									{#if ovf}
+										<!-- The part past the window edge: faded, behind a dashed edge -->
+										<span class="sl-ovf" style="left:{ovf.edgeX - bx}px"><b>+{ovf.days}d</b></span>
+									{/if}
 									<!-- Resize handles -->
 									<span
 										class="sl-edge sl-edge--l"
@@ -670,6 +810,8 @@
 									<span class="sl-bar-lbl">
 										{stage?.name ?? ''}
 										{#if task.iteration > 1}<em>×{task.iteration}</em>{/if}
+										{#if lane.overflow}<em>· {bookMap.get(task.bookId)?.code ?? ''}</em>{/if}
+										{#if outside}<em class="sl-flag">Outside window</em>{/if}
 									</span>
 									<span
 										class="sl-edge sl-edge--r"
@@ -981,6 +1123,77 @@
 		font-style: normal;
 		opacity: 0.7;
 		margin-left: 3px;
+	}
+
+	/* Window overflow: the part past the edge is faded behind a dashed line */
+	.sl-ovf {
+		position: absolute;
+		top: 0;
+		right: 0;
+		height: 100%;
+		border-left: 2px dashed currentColor;
+		background: color-mix(in srgb, var(--background) 40%, transparent);
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		padding-right: 6px;
+		pointer-events: none;
+	}
+	.sl-ovf b {
+		font-size: 10px;
+		font-weight: 700;
+		background: var(--background);
+		color: var(--foreground);
+		border-radius: 3px;
+		padding: 0 3px;
+	}
+	.sl-bar--outside {
+		outline: 2px dashed var(--danger);
+		outline-offset: 1px;
+	}
+	.sl-flag {
+		color: var(--danger);
+		font-weight: 700;
+	}
+	.sl-bar--unscheduled {
+		background-image: repeating-linear-gradient(135deg, transparent 0 6px, rgba(0, 0, 0, 0.08) 6px 12px);
+	}
+
+	/* Messages and the overflow prompt */
+	.sl-notice,
+	.sl-ask {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 8px 16px;
+		font-size: 13px;
+		border-bottom: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+	.sl-notice {
+		background: var(--danger-subtle);
+		color: var(--danger);
+		justify-content: space-between;
+	}
+	.sl-notice button {
+		border: none;
+		background: none;
+		color: inherit;
+		font-size: 16px;
+		line-height: 1;
+	}
+	.sl-ask {
+		background: var(--tertiary-subtle);
+		color: var(--tertiary-foreground);
+		justify-content: space-between;
+		flex-wrap: wrap;
+	}
+	.sl-ask p {
+		margin: 0;
+	}
+	.sl-ask-actions {
+		display: flex;
+		gap: 8px;
 	}
 
 	/* Resize edge handles */

@@ -1,10 +1,10 @@
 // Working-day scheduler. Holidays table is populated by admins; for now we
 // ship with an empty table and use Mon-Fri as working days.
 
-import { addWorkingDays, deriveEnd, nextWorkingDay, toWorkingDay } from './calendar.ts';
-import { fitsWindow, placeInWindows, windowAt, type Win } from './windows.ts';
+import { addWorkingDays, deriveEnd, nextWorkingDay, toWorkingDay } from '../schedule/calendar.ts';
+import { fitsWindow, placeInWindows, windowAt, type Win } from '../schedule/windows.ts';
 
-export { addWorkingDays, deriveEnd, isWorkingDay, nextWorkingDay, toWorkingDay } from './calendar.ts';
+export { addWorkingDays, deriveEnd, isWorkingDay, nextWorkingDay, toWorkingDay } from '../schedule/calendar.ts';
 
 export type SchedTask = {
 	id: string;
