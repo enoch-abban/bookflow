@@ -147,6 +147,10 @@
 												<span class="chip-avatar">{initials(lead.displayName)}</span>
 											{/if}
 											<span class="chip-date">{fmtDate(task.endDate)}</span>
+											{#if (stage.key === 'printing' || stage.key === 'binding') && data.copies[book.id]}
+												{@const c = data.copies[book.id]}
+												<span class="chip-copies" title="Copies {stage.key === 'printing' ? 'printed' : 'bound'} against the print run">{stage.key === 'printing' ? c.printed : c.bound} of {c.run}</span>
+											{/if}
 										</div>
 									{:else}
 										<div class="chip chip--empty">—</div>

@@ -9,6 +9,7 @@ import {
 	tasks,
 	taskAssignees,
 	people,
+	printRecords,
 } from '#lib/server/db/schema.ts';
 import { and, eq, inArray, asc, isNull } from 'drizzle-orm';
 
@@ -50,6 +51,10 @@ export const load: PageServerLoad = async ({ params }) => {
 		? await db.select().from(people).where(inArray(people.id, personIds))
 		: [];
 
+	// Copies against plan for the printing and binding cells (spec: Status matrix).
+	const records = bookIds.length ? await db.select().from(printRecords).where(inArray(printRecords.bookId, bookIds)) : [];
+	const copies = Object.fromEntries(records.map((r) => [r.bookId, { printed: r.copiesPrinted, bound: r.copiesBound, run: r.copiesPlanned + r.depositCopies }]));
+
 	// Build stats
 	const today = new Date().toISOString().slice(0, 10);
 	let late = 0;
@@ -79,6 +84,7 @@ export const load: PageServerLoad = async ({ params }) => {
 		tasks: tasksData,
 		assignees: assigneesData,
 		people: peopleData,
+		copies,
 		stats: { late, atRisk, projectedFinish, today },
 	};
 };
