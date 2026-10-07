@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import { latestEnd, sortWindows, windowAt } from '#lib/schedule/windows.ts';
 	import { setHolidays } from '#lib/schedule/calendar.ts';
+	import { criticalPath } from '#lib/schedule/critical.ts';
 
 	// ── Types ─────────────────────────────────────────────────────────────────
 
@@ -127,6 +128,22 @@
 
 	let laneMode = $state<'book' | 'person'>('book');
 	let critPath = $state(false);
+
+	// The toggle is remembered in this browser, and C switches it (spec: Projected dates).
+	const CP_KEY = 'bookflow:criticalPath';
+	$effect(() => {
+		try { critPath = localStorage.getItem(CP_KEY) === '1'; } catch { /* storage unavailable */ }
+	});
+	function toggleCritPath() {
+		critPath = !critPath;
+		try { localStorage.setItem(CP_KEY, critPath ? '1' : '0'); } catch { /* storage unavailable */ }
+	}
+	function onKey(e: KeyboardEvent) {
+		const el = e.target as HTMLElement | null;
+		if (e.key.toLowerCase() !== 'c' || e.ctrlKey || e.metaKey || e.altKey) return;
+		if (el && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName))) return;
+		toggleCritPath();
+	}
 	// Editable local copy; synced from prop via effect declared after drag/resize state
 	let localTasks = $state<Task[]>([]);
 
@@ -348,6 +365,12 @@
 
 	// ── Dependency arrows ─────────────────────────────────────────────────────
 
+	// Critical path: tasks that cannot slip without delaying the series' projected finish
+	// (the latest binding). Recomputed as bars move, so a drag shows its effect at once.
+	const critical = $derived(
+		criticalPath(localTasks, deps, localTasks.filter((t) => stageMap.get(t.stageId)?.key === 'binding').map((t) => t.id))
+	);
+
 	// Arrows are hidden by default to keep the chart readable. A task's arrows show while
 	// it is hovered, focused, dragged or resized; arrows flagging a violation always show.
 
@@ -357,6 +380,7 @@
 
 	const arrows = $derived.by((): Arrow[] => {
 		const focusId = drag?.taskId ?? resizing?.taskId ?? hoverId;
+		const onPath = (a: string, b: string) => critPath && critical.has(a) && critical.has(b);
 		return deps.flatMap((dep) => {
 			const pred = localTasks.find((t) => t.id === dep.predecessorId);
 			const succ = localTasks.find((t) => t.id === dep.successorId);
@@ -366,7 +390,7 @@
 			if (y1 === undefined || y2 === undefined) return [];
 			// A task's successor starts the working day after it ends; a gate's may start the same day.
 			const violated = pred.durationDays === 0 ? succ.startDate < pred.endDate : succ.startDate <= pred.endDate;
-			if (!violated && focusId !== pred.id && focusId !== succ.id) return [];
+			if (!violated && focusId !== pred.id && focusId !== succ.id && !onPath(pred.id, succ.id)) return [];
 			return [{ key: dep.id, x1: barRight(pred), y1, x2: barLeft(succ), y2, violated }];
 		});
 	});
@@ -642,6 +666,8 @@
 	}
 </script>
 
+<svelte:window onkeydown={onKey} />
+
 <div class="sl-root">
 	<!-- Toolbar -->
 	<div class="sl-toolbar">
@@ -656,8 +682,9 @@
 			<button
 				class="btn-toggle"
 				class:on={critPath}
-				onclick={() => (critPath = !critPath)}
-				title="C"
+				onclick={toggleCritPath}
+				aria-pressed={critPath}
+				title="Outline the tasks that cannot slip without delaying the finish (shortcut: C)"
 			>
 				Critical path
 			</button>
@@ -822,8 +849,8 @@
 							{@const rowTop = (box.sub.get(task.id) ?? 0) * ROW_H}
 							{@const bw = barWidth(task)}
 							{@const isGate = stage?.category === 'gate'}
-							{@const isDone = task.status === 'done'}
-							{@const isCpFaded = critPath && !isDone}
+							{@const isCritical = critPath && critical.has(task.id)}
+							{@const isCpFaded = critPath && !isCritical}
 
 							{#if isGate}
 								<!-- Diamond marker -->
@@ -832,6 +859,7 @@
 									style="left:{bx + DAY_W / 2 - 9}px;top:{rowTop + ROW_H / 2 - 9}px"
 									title={stage?.name ?? ''}
 									class:cp-dim={isCpFaded}
+									class:cp-on={isCritical}
 								></div>
 							{:else}
 								{@const ovf = overflowOf(task)}
@@ -839,6 +867,7 @@
 								<div
 									class="sl-bar {catCls(stage?.category ?? 'creation')} {statusCls(task.status)}"
 									class:cp-dim={isCpFaded}
+									class:cp-on={isCritical}
 									class:sl-bar--outside={outside}
 									class:sl-bar--unscheduled={lane.overflow}
 									style="left:{bx}px;width:{bw}px;top:{rowTop + 4}px;height:{ROW_H - 8}px"
@@ -1288,7 +1317,12 @@
 
 	/* Critical-path dim */
 	.cp-dim {
-		opacity: 0.25;
+		opacity: 0.4;
+	}
+	.cp-on {
+		outline: 2px solid var(--primary-active);
+		outline-offset: 1px;
+		z-index: 6;
 	}
 
 	/* ── Stage category fills ─────────────────────────────────────────────────── */

@@ -6,6 +6,18 @@
 
 	let { data }: PageProps = $props();
 
+	// ── Critical path for this book (same toggle and memory as the swimlane) ──
+	const CP_KEY = 'bookflow:criticalPath';
+	let critPath = $state(false);
+	$effect(() => {
+		try { critPath = localStorage.getItem(CP_KEY) === '1'; } catch { /* storage unavailable */ }
+	});
+	function toggleCritPath() {
+		critPath = !critPath;
+		try { localStorage.setItem(CP_KEY, critPath ? '1' : '0'); } catch { /* storage unavailable */ }
+	}
+	const critical = $derived(new Set(data.criticalIds));
+
 	// ── Publishing: ISBN and edition (coordinators) ─────────────────────────
 	let editingPub = $state(false);
 	let pub = $state({ isbn: '', edition: '' });
@@ -214,7 +226,16 @@
 
 	<!-- Tasks -->
 	<section class="card">
-		<h2>Tasks {#if data.baseline}<span class="hint">variance against the {data.baseline.name} baseline</span>{/if}</h2>
+		<div class="card-head">
+			<h2>Tasks {#if data.baseline}<span class="hint">variance against the {data.baseline.name} baseline</span>{/if}</h2>
+			<button class="cp-toggle" class:on={critPath} aria-pressed={critPath} onclick={toggleCritPath}
+				title="Outline the tasks that cannot slip without delaying this book's binding">Critical path</button>
+		</div>
+		{#if critPath}
+			<p class="hint">
+				{#if data.criticalIds.length}{data.criticalIds.length} of this book's tasks cannot slip without delaying its binding.{:else}No task is on the critical path for this book.{/if}
+			</p>
+		{/if}
 		<div class="table-wrap">
 			<table>
 				<thead>
@@ -226,7 +247,7 @@
 				<tbody>
 					{#each data.tasks as t (t.id)}
 						{@const v = variance(t.variance)}
-						<tr class:dim={t.stageArchived}>
+						<tr class:dim={t.stageArchived} class:cp-on={critPath && critical.has(t.id)} class:cp-dim={critPath && !critical.has(t.id)}>
 							<td>
 								<div class="stage">{t.stage}{#if t.iteration > 1}<span class="iter">×{t.iteration}</span>{/if}</div>
 								{#if t.stageArchived}<div class="muted">archived stage</div>{/if}
@@ -372,6 +393,13 @@
 
 	.card { border: 1px solid var(--border); border-radius: var(--radius); padding: var(--sp-4) var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
 	.card h2 { font-size: 15px; font-weight: 700; }
+	.card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+	.cp-toggle { border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: 500; background: var(--background); color: var(--muted-foreground); }
+	.cp-toggle.on { background: var(--primary-subtle); color: var(--primary); border-color: transparent; }
+	tr.cp-on td { box-shadow: inset 0 2px 0 var(--primary-active), inset 0 -2px 0 var(--primary-active); }
+	tr.cp-on td:first-child { box-shadow: inset 2px 2px 0 var(--primary-active), inset 0 -2px 0 var(--primary-active); }
+	tr.cp-on td:last-child { box-shadow: inset -2px 2px 0 var(--primary-active), inset 0 -2px 0 var(--primary-active); }
+	tr.cp-dim td { opacity: 0.4; }
 	.spaced { margin-top: var(--sp-3); }
 	.hint { font-size: 12px; font-weight: 400; color: var(--muted-foreground); }
 	.muted { color: var(--muted-foreground); font-size: 12px; }

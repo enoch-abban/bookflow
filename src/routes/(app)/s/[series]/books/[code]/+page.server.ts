@@ -3,13 +3,14 @@ import { error } from '@sveltejs/kit';
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '#lib/server/db/index.ts';
 import {
-	baselines, baselineTasks, bookStageSkips, books, people, printApprovals, printRecords, reviewCycles, series,
+	baselines, baselineTasks, bookStageSkips, books, dependencies, people, printApprovals, printRecords, reviewCycles, series,
 	stageTracks, stages, taskAssignees, taskComments, tasks, tracks, windows
 } from '#lib/server/db/schema.ts';
 import { requireMember } from '#lib/server/api-auth.ts';
 import { workingDaysBetween } from '#lib/schedule/calendar.ts';
 import { recordAccess } from '#lib/server/print-records.ts';
 import { refreshHolidays } from '#lib/server/calendar-db.ts';
+import { criticalPath } from '#lib/schedule/critical.ts';
 
 // Book detail (spec: Book detail): ISBN and edition, the pipeline as a stepper, every task
 // with dates and variance from the latest baseline, review history, comments, and the
@@ -81,6 +82,19 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		});
 
 	const binding = taskList.find((t) => t.stageKey === 'binding');
+
+	// This book's critical path: tasks that cannot slip without delaying its binding. Other
+	// books' tasks count too, since a cross-book link can hold this book up.
+	let criticalIds: string[] = [];
+	if (binding) {
+		const seriesTasks = await db.select({ id: tasks.id, startDate: tasks.startDate, endDate: tasks.endDate, durationDays: tasks.durationDays, status: tasks.status })
+			.from(tasks).innerJoin(books, eq(books.id, tasks.bookId)).where(eq(books.seriesId, ser.id));
+		const seriesDeps = await db.select({ predecessorId: dependencies.predecessorId, successorId: dependencies.successorId, lagDays: dependencies.lagDays })
+			.from(dependencies).innerJoin(tasks, eq(tasks.id, dependencies.successorId)).innerJoin(books, eq(books.id, tasks.bookId))
+			.where(eq(books.seriesId, ser.id));
+		const onPath = criticalPath(seriesTasks, seriesDeps, [binding.id]);
+		criticalIds = taskList.filter((t) => onPath.has(t.id)).map((t) => t.id);
+	}
 	const deposit = taskList.find((t) => t.stageKey === 'legal_deposit');
 	const isCoord = me.isAdmin || me.role === 'coordinator';
 	const access = await recordAccess(locals, book);
@@ -100,6 +114,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 			outcome: r.r.outcome, comments: r.r.comments, at: r.r.createdAt,
 		})),
 		comments: comments.map((c) => ({ id: c.c.id, stage: stageOf.get(c.c.taskId)?.name ?? '', author: c.name, body: c.c.body, at: c.c.createdAt })),
+		criticalIds,
 		canEdit: isCoord,
 		canEditRecord: access.production && !book.archivedAt,
 	};
