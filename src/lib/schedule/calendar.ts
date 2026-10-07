@@ -1,9 +1,45 @@
-// Working-day calendar. Mon-Fri for now; the spec also excludes the holidays table,
-// which is not wired in yet.
+// Working-day calendar (spec: Calendar): Monday to Friday, minus the dates in the
+// holidays table the admin maintains. The holiday set is held here so every caller
+// (scheduler, windows, swimlane) uses the same calendar; the server refreshes it from
+// the database before scheduling, and pages pass it to the browser.
+
+let holidays: ReadonlySet<string> = new Set();
+
+export function setHolidays(dates: Iterable<string>) {
+	holidays = new Set(dates);
+}
+
+export function getHolidays(): ReadonlySet<string> {
+	return holidays;
+}
+
+/**
+ * Run `fn` with a different holiday set, then restore the current one. `fn` must be
+ * synchronous, so no other request can observe the temporary set.
+ */
+export function withHolidays<T>(dates: Iterable<string>, fn: () => T): T {
+	const saved = holidays;
+	holidays = new Set(dates);
+	try {
+		const result = fn();
+		if (result instanceof Promise) throw new Error('withHolidays needs a synchronous function');
+		return result;
+	} finally {
+		holidays = saved;
+	}
+}
+
+export function isWeekend(date: string): boolean {
+	const dow = new Date(date + 'T12:00:00Z').getUTCDay();
+	return dow === 0 || dow === 6;
+}
+
+export function isHoliday(date: string): boolean {
+	return holidays.has(date);
+}
 
 export function isWorkingDay(date: string): boolean {
-	const dow = new Date(date + 'T12:00:00Z').getUTCDay();
-	return dow !== 0 && dow !== 6;
+	return !isWeekend(date) && !holidays.has(date);
 }
 
 /** Move n working days forward (or back when negative). n = 0 returns the date unchanged. */
@@ -14,7 +50,7 @@ export function addWorkingDays(date: string, n: number): string {
 	const sign = n > 0 ? 1 : -1;
 	while (count < Math.abs(n)) {
 		d.setUTCDate(d.getUTCDate() + sign);
-		if (d.getUTCDay() !== 0 && d.getUTCDay() !== 6) count++;
+		if (isWorkingDay(d.toISOString().slice(0, 10))) count++;
 	}
 	return d.toISOString().slice(0, 10);
 }

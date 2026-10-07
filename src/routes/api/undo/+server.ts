@@ -2,7 +2,7 @@ import type { RequestHandler } from './$types';
 import { json, error } from '@sveltejs/kit';
 import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
-import { activityLog, baselineTasks, books, bookStageSkips, dependencies, printRecords, series, stageLinks, stageTracks, stages, taskAssignees, taskComments, tasks, tracks, windows } from '#lib/server/db/schema.ts';
+import { activityLog, baselineTasks, books, bookStageSkips, dependencies, holidays, printRecords, series, stageLinks, stageTracks, stages, taskAssignees, taskComments, tasks, tracks, windows } from '#lib/server/db/schema.ts';
 import { and, asc, eq, inArray, or } from 'drizzle-orm';
 import { parseBody, resolvePerson } from '#lib/server/api-auth.ts';
 
@@ -294,6 +294,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			const skip = JSON.parse(entry.afterJson!);
 			await tx.delete(bookStageSkips).where(and(eq(bookStageSkips.bookId, skip.bookId), eq(bookStageSkips.stageId, skip.stageId)));
 			await logRow('skip', entry.entityId, skip, null);
+		}
+
+		// A holiday the batch added goes; one it removed comes back. Task dates are restored above.
+		for (const entry of entries.filter(e => e.entity === 'holiday')) {
+			if (entry.action === 'create') await tx.delete(holidays).where(eq(holidays.date, entry.entityId));
+			if (entry.action === 'delete' && entry.beforeJson) await tx.insert(holidays).values(JSON.parse(entry.beforeJson)).onConflictDoNothing();
+			await tx.insert(activityLog).values({ id: ulid(), seriesId: null, actorId: personId, entity: 'holiday', entityId: entry.entityId, action: 'undo', beforeJson: entry.afterJson, afterJson: entry.beforeJson, batchId: undoBatch, createdAt: now });
 		}
 
 		for (const entry of recordEntries) {

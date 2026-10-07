@@ -13,6 +13,7 @@ import {
 import { bookLinks, type StageLink } from '../schedule/pattern.ts';
 import { deriveEnd, nextWorkingDay, toWorkingDay } from '../schedule/calendar.ts';
 import { buildPredMap, earliestStart, settle, type SchedTask, type WindowRules } from './scheduler.ts';
+import { refreshHolidays } from './calendar-db.ts';
 
 type StageRow = typeof stages.$inferSelect;
 
@@ -50,6 +51,7 @@ type NewTask = typeof tasks.$inferInsert & { assignees: { personId: string; isLe
  */
 export async function addBook(opts: { seriesId: string; actorId: string; input: AddBookInput; preview: boolean; today: string }) {
 	const { seriesId, actorId, input } = opts;
+	await refreshHolidays();
 	const ser = await db.select().from(series).where(eq(series.id, seriesId)).then((r) => r[0]);
 	if (!ser) throw error(404, 'Series not found');
 

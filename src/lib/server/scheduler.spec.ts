@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { deriveEnd, nextWorkingDay, propagate, settle, type SchedTask, type WindowRules } from './scheduler.ts';
 import { latestEnd, overlapping, placeInWindows, sortWindows, type Win } from '../schedule/windows.ts';
+import { withHolidays } from '../schedule/calendar.ts';
 import { refit } from './refit.ts';
 
 // October 2026: the 12th is a Monday.
@@ -149,6 +150,15 @@ describe('refit', () => {
 		const res = refit(m, [], rules(0, true, extended));
 		expect(res.changes[0]).toMatchObject({ kind: 'placed', after: { startDate: '2026-11-02', windowId: 'w3', scheduleState: 'scheduled' } });
 	});
+	it('lays durations out again around a new holiday, pushing successors (rederive)', () => {
+		const m = mapOf(task('a', '2026-11-30', 4), task('b', '2026-12-04', 1), task('d', '2026-11-30', 2, { status: 'in_progress' }));
+		const deps = [{ predecessorId: 'a', successorId: 'b', lagDays: 0 }];
+		const res = withHolidays(['2026-12-02'], () => refit(m, deps, rules(0, false), { rederive: true }));
+		expect(m.get('a')).toMatchObject({ startDate: '2026-11-30', endDate: '2026-12-04' }); // 4 days around Wed 2 Dec
+		expect(m.get('b')).toMatchObject({ startDate: '2026-12-07', endDate: '2026-12-07' });
+		expect(res.changes.map((c) => c.id)).toEqual(['a', 'b']); // the started task never moves
+	});
+
 	it('makes a task unscheduled when lowering the allowance leaves no window with room', () => {
 		const m = mapOf(task('a', '2026-10-28', 4, { windowId: 'w3', overflowAllowed: true }));
 		expect(refit(m, [], rules(2)).changes).toEqual([]);

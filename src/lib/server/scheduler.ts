@@ -105,12 +105,13 @@ export function checkExplicitMove(
  * while it fits (using its overflow allowance), otherwise jumps to the earliest later
  * window with room, otherwise becomes unscheduled at the earliest dates it could run.
  */
-export function settle(t: SchedTask, minStart: string, rules: WindowRules): Placement {
+export function settle(t: SchedTask, minStart: string, rules: WindowRules, opts: { rederive?: boolean } = {}): Placement {
 	const start = toWorkingDay(later(t.startDate, minStart));
 	const end = deriveEnd(start, t.durationDays);
 	if (!isWindowed(t, rules)) {
-		// Nothing pushes it and no window applies: leave its dates exactly as they are.
-		if (minStart <= t.startDate) return { startDate: t.startDate, endDate: t.endDate, windowId: null, scheduleState: 'scheduled' };
+		// Nothing pushes it and no window applies: leave its dates exactly as they are,
+		// unless the calendar changed (rederive), when the duration is laid out again.
+		if (!opts.rederive && minStart <= t.startDate) return { startDate: t.startDate, endDate: t.endDate, windowId: null, scheduleState: 'scheduled' };
 		return { startDate: start, endDate: end, windowId: null, scheduleState: 'scheduled' };
 	}
 

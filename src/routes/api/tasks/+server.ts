@@ -6,6 +6,7 @@ import { tasks, taskAssignees, activityLog, books, series, stages, windows } fro
 import { asc, eq } from 'drizzle-orm';
 import { requireCoord, parseBody } from '#lib/server/api-auth.ts';
 import { checkExplicitMove, deriveEnd } from '#lib/server/scheduler.ts';
+import { refreshHolidays } from '#lib/server/calendar-db.ts';
 
 type Body = {
 	bookId:       string;
@@ -31,6 +32,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	const { personId } = await requireCoord(locals, book.seriesId);
 
+	await refreshHolidays();
 	const taskId  = ulid();
 	const now     = new Date().toISOString();
 	const newEnd  = deriveEnd(body.start, body.durationDays);

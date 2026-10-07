@@ -8,10 +8,12 @@ import { books, tasks, dependencies, series, stages, windows } from '#lib/server
 import { asc, eq, inArray } from 'drizzle-orm';
 import type { SchedTask, SchedDep, WindowRules } from './scheduler.ts';
 import type { Win } from '../schedule/windows.ts';
+import { refreshHolidays } from './calendar-db.ts';
 
 export type SeriesContext = Awaited<ReturnType<typeof loadSeriesContext>>;
 
 export async function loadSeriesContext(seriesId: string) {
+	await refreshHolidays();
 	const ser = await db.select().from(series).where(eq(series.id, seriesId)).then(r => r[0]);
 	if (!ser) throw error(404, 'Series not found');
 

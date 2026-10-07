@@ -5,6 +5,7 @@ import { db } from '#lib/server/db/index.ts';
 import { bookStageSkips, books, invites, people, series, seriesMembers, stages, stageTracks, tasks, tracks, windows } from '#lib/server/db/schema.ts';
 import { requireCoord } from '#lib/server/api-auth.ts';
 import { inviteState } from '#lib/server/invites.ts';
+import { refreshHolidays } from '#lib/server/calendar-db.ts';
 
 export const load: PageServerLoad = async ({ params, locals }) => {
 	const me = await requireCoord(locals, params.series);
@@ -113,6 +114,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		members,
 		others,
 		windows: windowList,
+		holidays: (await refreshHolidays()).map((h) => h.date),
 		pipeline,
 		unscheduled,
 		teamLabels,

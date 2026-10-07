@@ -65,7 +65,7 @@ const placementOf = (t: SchedTask): Placement => ({
  *
  * @param taskMap Mutable; updated in place with the new placements.
  */
-export function refit(taskMap: Map<string, SchedTask>, deps: SchedDep[], rules: WindowRules): RefitResult {
+export function refit(taskMap: Map<string, SchedTask>, deps: SchedDep[], rules: WindowRules, opts: { rederive?: boolean } = {}): RefitResult {
 	const { predMap } = buildPredMap(deps);
 	const changes: RefitChange[] = [];
 	const changed = new Set<string>();
@@ -84,7 +84,7 @@ export function refit(taskMap: Map<string, SchedTask>, deps: SchedDep[], rules: 
 			const minStart = predMoved || t.scheduleState === 'unscheduled'
 				? (earliestStart(t.id, taskMap, predMap) ?? t.startDate)
 				: t.startDate;
-			after = settle(t, minStart, rules);
+			after = settle(t, minStart, rules, opts);
 		}
 
 		if (before.startDate === after.startDate && before.endDate === after.endDate &&

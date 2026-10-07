@@ -9,12 +9,14 @@ import {
 import { requireMember } from '#lib/server/api-auth.ts';
 import { workingDaysBetween } from '#lib/schedule/calendar.ts';
 import { recordAccess } from '#lib/server/print-records.ts';
+import { refreshHolidays } from '#lib/server/calendar-db.ts';
 
 // Book detail (spec: Book detail): ISBN and edition, the pipeline as a stepper, every task
 // with dates and variance from the latest baseline, review history, comments, and the
 // print approval and print records. Archived books stay viewable here.
 export const load: PageServerLoad = async ({ params, locals }) => {
 	const me = await requireMember(locals, params.series);
+	await refreshHolidays();
 	const ser = await db.select().from(series).where(eq(series.id, params.series)).then((r) => r[0]);
 	if (!ser) throw error(404, 'Series not found');
 	const book = await db.select().from(books)

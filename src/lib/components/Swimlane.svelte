@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { latestEnd, sortWindows, windowAt } from '#lib/schedule/windows.ts';
+	import { setHolidays } from '#lib/schedule/calendar.ts';
 
 	// ── Types ─────────────────────────────────────────────────────────────────
 
@@ -61,6 +62,7 @@
 		people: Person[];
 		members: Member[];
 		today: string;
+		holidays?: { date: string; label: string }[];
 	};
 
 	let {
@@ -73,8 +75,13 @@
 		windows: windowsProp,
 		people: peopleProp,
 		members,
-		today
+		today,
+		holidays: holidaysProp = []
 	}: Props = $props();
+
+	// The same working-day calendar as the server: holidays are not working days.
+	$effect.pre(() => setHolidays(holidaysProp.map((h) => h.date)));
+	const holidayName = $derived(new Map(holidaysProp.map((h) => [h.date, h.label])));
 
 	// ── Constants ─────────────────────────────────────────────────────────────
 
@@ -146,6 +153,7 @@
 		return d.toISOString().slice(0, 10);
 	}
 
+	// isWeekend means "not a working day": weekends and holidays share the narrow column.
 	type CalDay = { date: string; isWeekend: boolean; dayNum: number; monthLabel: string | null };
 
 	// Two weeks past the target (spec), extended to the hard limit, the last window and
@@ -170,7 +178,7 @@
 			const mon = d.getUTCMonth();
 			days.push({
 				date: d.toISOString().slice(0, 10),
-				isWeekend: dow === 0 || dow === 6,
+				isWeekend: dow === 0 || dow === 6 || holidayName.has(d.toISOString().slice(0, 10)),
 				dayNum: d.getUTCDate(),
 				monthLabel: mon !== prevMonth ? MONTHS[mon] : null
 			});
@@ -740,7 +748,8 @@
 			<div class="sl-bg" style="left:{LABEL_W}px;width:{totalW}px;height:{layout.totalH}px">
 				{#each calDays as day}
 					{#if day.isWeekend}
-						<div class="sl-wknd" style="left:{dateX.get(day.date) ?? 0}px;width:{WKND_W}px"></div>
+						<div class="sl-wknd" class:sl-holiday={holidayName.has(day.date)} title={holidayName.get(day.date)}
+							style="left:{dateX.get(day.date) ?? 0}px;width:{WKND_W}px"></div>
 					{/if}
 				{/each}
 				{#each windowsProp as win, wi}
@@ -1057,6 +1066,10 @@
 		position: absolute;
 		top: 0;
 		pointer-events: none;
+	}
+	.sl-holiday {
+		background: var(--tertiary-subtle);
+		pointer-events: auto;
 	}
 	.sl-wknd {
 		position: absolute;

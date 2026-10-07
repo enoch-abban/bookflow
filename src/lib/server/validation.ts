@@ -185,3 +185,9 @@ export const applyDefaultsSchema = z.object({
 	fields: z.array(z.enum(['copiesPlanned', 'depositCopies'])).min(1, 'Choose what to apply.'),
 	preview: z.boolean().optional()
 });
+
+export const holidaySchema = z.object({
+	date: isoDate,
+	label: z.string().trim().min(1, 'Name the holiday.').max(80),
+	preview: z.boolean().optional()
+});

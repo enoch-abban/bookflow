@@ -13,6 +13,7 @@ import {
 	dependencies,
 } from '#lib/server/db/schema.ts';
 import { and, eq, inArray, asc, isNull } from 'drizzle-orm';
+import { refreshHolidays } from '#lib/server/calendar-db.ts';
 
 export const load: PageServerLoad = async ({ params }) => {
 	const sid = params.series;
@@ -56,5 +57,6 @@ export const load: PageServerLoad = async ({ params }) => {
 		people: peopleData,
 		members: membersData,
 		today: new Date().toISOString().slice(0, 10),
+		holidays: await refreshHolidays(),
 	};
 };

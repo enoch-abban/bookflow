@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '#lib/api-client.ts';
+	import { isWorkingDay, setHolidays } from '#lib/schedule/calendar.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -202,14 +203,13 @@
 	let newWin = $state({ label: '', startDate: '', endDate: '' });
 
 	const DAY_MS = 86_400_000;
+	// Same calendar as the server: holidays are not working days.
+	setHolidays(untrack(() => data.holidays));
 	function workingDays(start: string, end: string) {
 		const from = Date.parse(start + 'T12:00:00Z');
 		const to = Date.parse(end + 'T12:00:00Z');
 		let n = 0;
-		for (let t = from; t <= to; t += DAY_MS) {
-			const dow = new Date(t).getUTCDay();
-			if (dow !== 0 && dow !== 6) n++;
-		}
+		for (let t = from; t <= to; t += DAY_MS) if (isWorkingDay(new Date(t).toISOString().slice(0, 10))) n++;
 		return n;
 	}
 

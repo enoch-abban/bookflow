@@ -16,4 +16,5 @@
 	people={data.people}
 	members={data.members}
 	today={data.today}
+	holidays={data.holidays}
 />
