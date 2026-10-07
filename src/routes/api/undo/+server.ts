@@ -2,7 +2,7 @@ import type { RequestHandler } from './$types';
 import { json, error } from '@sveltejs/kit';
 import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
-import { activityLog, baselineTasks, books, bookStageSkips, dependencies, printRecords, series, stageLinks, stageTracks, stages, taskAssignees, taskComments, tasks, windows } from '#lib/server/db/schema.ts';
+import { activityLog, baselineTasks, books, bookStageSkips, dependencies, printRecords, series, stageLinks, stageTracks, stages, taskAssignees, taskComments, tasks, tracks, windows } from '#lib/server/db/schema.ts';
 import { and, asc, eq, inArray, or } from 'drizzle-orm';
 import { parseBody, resolvePerson } from '#lib/server/api-auth.ts';
 
@@ -133,10 +133,25 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		if (current && current.version !== 1) conflicting.push(entry.entityId);
 	}
 
+	// A stage the batch added can go only if it has no tasks the batch did not create;
+	// a track the batch created, only while no book follows it.
+	const stageCreates = entries.filter(e => e.entity === 'stage' && e.action === 'create');
+	const trackCreates = entries.filter(e => e.entity === 'track' && e.action === 'create');
+	const trackDeletes = entries.filter(e => e.entity === 'track' && e.action === 'delete' && e.beforeJson);
+	const createdTaskIds = new Set(rowCreates.filter(e => e.entity === 'task').map(e => e.entityId));
+	for (const entry of stageCreates) {
+		const others = await db.select({ id: tasks.id }).from(tasks).where(eq(tasks.stageId, entry.entityId));
+		if (others.some(t => !createdTaskIds.has(t.id))) bookConflicts.push(`the new stage's tasks`);
+	}
+	for (const entry of trackCreates) {
+		const users = await db.select({ id: books.id }).from(books).where(eq(books.trackId, entry.entityId));
+		if (users.length) bookConflicts.push('a book now on the new track');
+	}
+
 	if (conflicting.length > 0 || seriesConflicts.length > 0 || windowConflicts.length > 0 || bookConflicts.length > 0) {
 		return json({
 			error: 'conflict', taskIds: conflicting, seriesFields: seriesConflicts, windowIds: windowConflicts, books: bookConflicts,
-			message: bookConflicts.length ? `${bookConflicts.join(', ')} changed after it was added; it can no longer be undone.` : undefined,
+			message: bookConflicts.length ? `${bookConflicts.join(', ')} changed since; it can no longer be undone.` : undefined,
 		}, { status: 409 });
 	}
 
@@ -271,6 +286,25 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			const skip = JSON.parse(entry.afterJson!);
 			await tx.delete(bookStageSkips).where(and(eq(bookStageSkips.bookId, skip.bookId), eq(bookStageSkips.stageId, skip.stageId)));
 			await logRow('skip', entry.entityId, skip, null);
+		}
+
+		// Stages and tracks the batch added go once their tasks have; deleted tracks come back.
+		for (const entry of stageCreates) {
+			await tx.delete(bookStageSkips).where(eq(bookStageSkips.stageId, entry.entityId));
+			await tx.delete(stageTracks).where(eq(stageTracks.stageId, entry.entityId));
+			await tx.delete(stages).where(eq(stages.id, entry.entityId));
+			await tx.insert(activityLog).values({ id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'stage', entityId: entry.entityId, action: 'undo', beforeJson: entry.afterJson, batchId: undoBatch, createdAt: now });
+		}
+		for (const entry of trackCreates) {
+			await tx.delete(stageTracks).where(eq(stageTracks.trackId, entry.entityId));
+			await tx.delete(tracks).where(eq(tracks.id, entry.entityId));
+			await tx.insert(activityLog).values({ id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'track', entityId: entry.entityId, action: 'undo', beforeJson: entry.afterJson, batchId: undoBatch, createdAt: now });
+		}
+		for (const entry of trackDeletes) {
+			const before = JSON.parse(entry.beforeJson!);
+			await tx.insert(tracks).values(before.track).onConflictDoNothing();
+			if (before.stageTracks?.length) await tx.insert(stageTracks).values(before.stageTracks).onConflictDoNothing();
+			await tx.insert(activityLog).values({ id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'track', entityId: entry.entityId, action: 'undo', afterJson: JSON.stringify(before.track), batchId: undoBatch, createdAt: now });
 		}
 
 		// Books the batch added go, with everything created for them.

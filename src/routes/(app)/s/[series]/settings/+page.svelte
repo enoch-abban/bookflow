@@ -380,6 +380,91 @@
 
 	const stageName = $derived(new Map(data.pipeline.stages.map((s) => [s.id, s.name])));
 
+	// Tracks: add one from existing stages, or delete one no book follows.
+	let newTrack = $state({ name: '', include: {} as Record<string, boolean> });
+	async function addTrack(e: SubmitEvent) {
+		e.preventDefault();
+		const name = newTrack.name.trim();
+		const stageIds = data.pipeline.stages.filter((s) => newTrack.include[s.id]).map((s) => s.id);
+		const result = await pipeCall('POST', `/api/series/${data.series.id}/tracks`, { name, stageIds }, `Added ${name}.`);
+		if (!result) return;
+		lastPipeBatch = (result as unknown as { batchId?: string }).batchId ?? null;
+		newTrack = { name: '', include: {} };
+	}
+	async function deleteTrack(id: string, name: string) {
+		const result = await pipeCall('DELETE', `/api/tracks/${id}`, undefined, `Deleted ${name}.`);
+		if (result) lastPipeBatch = (result as unknown as { batchId?: string }).batchId ?? null;
+	}
+
+	// Add a stage: where it joins the pattern, which tracks and books get it.
+	type GrowPreview = {
+		tasks: { book: string; stage: string; startDate: string; endDate: string; window: string | null; scheduleState: string }[];
+		linked: number; unlinked: number;
+		pushed: { label: string; from: string; to: string; scheduleState: string }[];
+		batchId?: string;
+	};
+	type AddStagePreview = GrowPreview & { stage: { name: string }; books: { id: string; code: string; included: boolean; reason: string | null }[] };
+	const blankStage = () => ({
+		name: '', category: 'layout', defaultDays: 1, isReview: false, isExternal: false, ignoresWindows: false,
+		trackIds: {} as Record<string, boolean>, after: '', before: '', mode: 'insert' as 'insert' | 'alongside',
+		bookIds: null as string[] | null
+	});
+	let newStage = $state(blankStage());
+	let stagePreview = $state<AddStagePreview | null>(null);
+
+	function addStageBody() {
+		return {
+			name: newStage.name.trim(), category: newStage.category, defaultDays: Number(newStage.defaultDays),
+			isReview: newStage.isReview, isExternal: newStage.isExternal, ignoresWindows: newStage.ignoresWindows,
+			trackIds: data.pipeline.tracks.filter((t) => newStage.trackIds[t.id]).map((t) => t.id),
+			after: newStage.after || null, before: newStage.before || null, mode: newStage.mode,
+			...(newStage.bookIds ? { bookIds: newStage.bookIds } : {})
+		};
+	}
+	async function previewStage(e?: SubmitEvent) {
+		e?.preventDefault();
+		busy = true;
+		pipeFlash = null;
+		const res = await api<AddStagePreview>('POST', `/api/series/${data.series.id}/stages`, { ...addStageBody(), preview: true });
+		busy = false;
+		if (!res.ok) return (pipeFlash = { ok: false, text: res.message });
+		stagePreview = res.data;
+	}
+	function toggleStageBook(id: string, on: boolean) {
+		const current = newStage.bookIds ?? stagePreview?.books.filter((b) => b.included).map((b) => b.id) ?? [];
+		newStage.bookIds = on ? [...current, id] : current.filter((x) => x !== id);
+		previewStage();
+	}
+	async function confirmStage() {
+		const name = newStage.name.trim();
+		const result = await pipeCall('POST', `/api/series/${data.series.id}/stages`, addStageBody(), `Added ${name}.`);
+		if (!result) return;
+		stagePreview = null;
+		lastPipeBatch = (result as unknown as GrowPreview).batchId ?? null;
+		newStage = blankStage();
+	}
+
+	// Move a book to another track.
+	type MovePreview = GrowPreview & { book: string; from: string; to: string; keeps: number; removes: string[]; keepsDone: string[] };
+	let movePending = $state<{ bookId: string; trackId: string; preview: MovePreview } | null>(null);
+	async function askMove(b: PBook, trackId: string) {
+		if (!trackId || trackId === b.trackId) return (movePending = null);
+		busy = true;
+		pipeFlash = null;
+		const res = await api<MovePreview>('PUT', `/api/books/${b.id}/track`, { trackId, preview: true });
+		busy = false;
+		if (!res.ok) return (pipeFlash = { ok: false, text: res.message });
+		movePending = { bookId: b.id, trackId, preview: res.data };
+	}
+	async function confirmMove() {
+		if (!movePending) return;
+		const { bookId, trackId, preview: p } = movePending;
+		const result = await pipeCall('PUT', `/api/books/${bookId}/track`, { trackId }, `Moved ${p.book} to ${p.to}.`);
+		if (!result) return;
+		movePending = null;
+		lastPipeBatch = (result as unknown as GrowPreview).batchId ?? null;
+	}
+
 	// Remove a stage or a book: preview what is deleted, kept or archived, then confirm.
 	type RemovePreview = {
 		archive: boolean; reason?: string | null; deletesTasks: number; keepsTasks: number;
@@ -877,10 +962,29 @@
 							</div>
 						</div>
 						<button class="btn btn-ghost" onclick={() => (renamingTrack = { id: t.id, name: t.name })}>Rename</button>
+						<button class="btn btn-danger" disabled={busy || t.bookCount > 0}
+							title={t.bookCount ? `${plural(t.bookCount, 'book follows', 'books follow')} this track` : undefined}
+							onclick={() => deleteTrack(t.id, t.name)}>Delete</button>
 					{/if}
 				</li>
 			{/each}
 		</ul>
+		<form class="add-member" onsubmit={addTrack}>
+			<h3>Add a track</h3>
+			<div class="add-fields">
+				<label class="field grow">
+					<span>Name</span>
+					<input class="input" bind:value={newTrack.name} maxlength="60" placeholder="e.g. Workbook track" required />
+				</label>
+			</div>
+			<fieldset class="stage-picks">
+				<legend>Stages, in matrix order</legend>
+				{#each data.pipeline.stages as s (s.id)}
+					<label><input type="checkbox" checked={!!newTrack.include[s.id]} onchange={(e) => (newTrack.include[s.id] = e.currentTarget.checked)} /> {s.name}</label>
+				{/each}
+			</fieldset>
+			<div class="form-foot"><button class="btn btn-primary btn-lg" disabled={busy}>Add track</button></div>
+		</form>
 
 		<h3>Stages <span class="hint">in matrix column order; reordering does not change dependencies</span></h3>
 		<div class="table-wrap">
@@ -970,6 +1074,89 @@
 			</table>
 		</div>
 
+		<form class="add-member" onsubmit={previewStage}>
+			<h3>Add a stage</h3>
+			<div class="add-fields">
+				<label class="field grow">
+					<span>Name</span>
+					<input class="input" bind:value={newStage.name} maxlength="60" placeholder="e.g. Cover design" required oninput={() => (stagePreview = null)} />
+				</label>
+				<label class="field">
+					<span>Category</span>
+					<select class="input" bind:value={newStage.category} onchange={() => { stagePreview = null; if (newStage.category === 'gate') newStage.defaultDays = 0; }}>
+						{#each CATEGORIES as c (c)}<option value={c}>{CATEGORY_LABEL[c]}</option>{/each}
+					</select>
+				</label>
+				<label class="field">
+					<span>Default days</span>
+					<input class="input days" type="number" min="0" max="60" bind:value={newStage.defaultDays} oninput={() => (stagePreview = null)} />
+				</label>
+			</div>
+			<div class="seg">
+				<label><input type="checkbox" bind:checked={newStage.isReview} /> Review stage</label>
+				<label><input type="checkbox" bind:checked={newStage.isExternal} /> Done by an outside body</label>
+				<label><input type="checkbox" bind:checked={newStage.ignoresWindows} /> Ignores windows</label>
+			</div>
+			<fieldset class="stage-picks">
+				<legend>Tracks that get it</legend>
+				{#each data.pipeline.tracks as t (t.id)}
+					<label><input type="checkbox" checked={!!newStage.trackIds[t.id]} onchange={(e) => { newStage.trackIds[t.id] = e.currentTarget.checked; newStage.bookIds = null; stagePreview = null; }} /> {t.name}</label>
+				{/each}
+			</fieldset>
+			<div class="add-fields">
+				<label class="field">
+					<span>Starts after</span>
+					<select class="input" bind:value={newStage.after} onchange={() => (stagePreview = null)}>
+						<option value="">Nothing (first)</option>
+						{#each data.pipeline.stages as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
+					</select>
+				</label>
+				<label class="field">
+					<span>Finishes before</span>
+					<select class="input" bind:value={newStage.before} onchange={() => { newStage.bookIds = null; stagePreview = null; }}>
+						<option value="">Nothing (last)</option>
+						{#each data.pipeline.stages as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
+					</select>
+				</label>
+				<div class="seg" role="radiogroup" aria-label="How it joins">
+					<label title="Replaces the direct link between the two stages"><input type="radio" bind:group={newStage.mode} value="insert" onchange={() => (stagePreview = null)} /> Insert into the chain</label>
+					<label title="Keeps the direct link, as the ISBN process runs alongside layout"><input type="radio" bind:group={newStage.mode} value="alongside" onchange={() => (stagePreview = null)} /> Run alongside</label>
+				</div>
+			</div>
+
+			{#if stagePreview}
+				{@const sp = stagePreview}
+				<div class="impact" role="alertdialog" aria-label="Confirm new stage">
+					<p>
+						<strong>{sp.stage.name}</strong> gives {plural(sp.tasks.length, 'book a task', 'books a task')}, adds
+						{plural(sp.linked, 'link', 'links')}{#if sp.unlinked}, replaces {plural(sp.unlinked, 'direct link', 'direct links')}{/if}{#if sp.pushed.length}, and pushes {plural(sp.pushed.length, 'task', 'tasks')} later{/if}.
+						Unticked books record a skip.
+					</p>
+					<div class="stage-picks">
+						{#each sp.books as b (b.id)}
+							<label title={b.reason ?? undefined}>
+								<input type="checkbox" checked={b.included} disabled={busy} onchange={(e) => toggleStageBook(b.id, e.currentTarget.checked)} />
+								{b.code}{#if b.reason}<span class="hint"> ({b.reason})</span>{/if}
+							</label>
+						{/each}
+					</div>
+					{#if sp.tasks.length}
+						<ul class="impact-list">
+							{#each sp.tasks.slice(0, 6) as t (t.book)}
+								<li class:warn={t.scheduleState === 'unscheduled'}>{t.book}: {fmtDate(t.startDate)} → {fmtDate(t.endDate)} {t.scheduleState === 'unscheduled' ? '(unscheduled)' : t.window ? `(${t.window})` : ''}</li>
+							{/each}
+						</ul>
+					{/if}
+					<div class="form-foot">
+						<button type="button" class="btn btn-ghost btn-lg" onclick={() => (stagePreview = null)}>Cancel</button>
+						<button type="button" class="btn btn-primary btn-lg" disabled={busy} onclick={confirmStage}>Add stage</button>
+					</div>
+				</div>
+			{:else}
+				<div class="form-foot"><button class="btn btn-primary btn-lg" disabled={busy}>Preview</button></div>
+			{/if}
+		</form>
+
 		<h3>Books</h3>
 		<datalist id="group-labels">{#each groupLabels as g (g)}<option value={g}></option>{/each}</datalist>
 		<div class="table-wrap">
@@ -990,7 +1177,12 @@
 								<td><input class="input" bind:value={d.name} maxlength="120" aria-label="Name" /></td>
 								<td><input class="input" list="group-labels" bind:value={d.groupLabel} maxlength="60" placeholder="None" aria-label={data.series.bookGroupLabel} /></td>
 								<td class="num"><input class="input days" type="number" min="1" max="99" bind:value={d.batch} aria-label="Batch" /></td>
-								<td class="muted">{b.trackName}</td>
+								<td>
+									<select class="input" aria-label="Track" value={movePending?.bookId === b.id ? movePending.trackId : b.trackId} disabled={busy}
+										onchange={(e) => askMove(b, e.currentTarget.value)}>
+										{#each data.pipeline.tracks as t (t.id)}<option value={t.id}>{t.name}</option>{/each}
+									</select>
+								</td>
 								<td class="num">{b.taskCount}</td>
 								<td class="right">
 									<div class="actions">
@@ -1005,6 +1197,34 @@
 								</td>
 							</tr>
 							{#if removePending?.kind === 'book' && removePending.id === b.id}{@render removePanel(8)}{/if}
+							{#if movePending?.bookId === b.id}
+								{@const mp = movePending.preview}
+								<tr class="expand">
+									<td colspan="8">
+										<div class="impact" role="alertdialog" aria-label="Confirm track change">
+											<p>
+												<strong>Move {mp.book} from {mp.from} to {mp.to}:</strong>
+												{plural(mp.keeps, 'shared stage keeps its task', 'shared stages keep their tasks')}, progress included.
+												{#if mp.removes.length}Removes {mp.removes.join(', ')}.{/if}
+												{#if mp.keepsDone.length}Keeps {mp.keepsDone.join(', ')} as Done history.{/if}
+												{#if mp.tasks.length}Adds {mp.tasks.map((t) => t.stage).join(', ')}.{/if}
+												{#if mp.pushed.length}Pushes {plural(mp.pushed.length, 'task', 'tasks')} later.{/if}
+											</p>
+											{#if mp.tasks.length}
+												<ul class="impact-list">
+													{#each mp.tasks as t (t.stage)}
+														<li class:warn={t.scheduleState === 'unscheduled'}>{t.stage}: {fmtDate(t.startDate)} → {fmtDate(t.endDate)} {t.scheduleState === 'unscheduled' ? '(unscheduled)' : t.window ? `(${t.window})` : ''}</li>
+													{/each}
+												</ul>
+											{/if}
+											<div class="form-foot">
+												<button type="button" class="btn btn-ghost btn-lg" onclick={() => (movePending = null)}>Cancel</button>
+												<button type="button" class="btn btn-primary btn-lg" disabled={busy} onclick={confirmMove}>Move {mp.book}</button>
+											</div>
+										</div>
+									</td>
+								</tr>
+							{/if}
 							{#if stagesOpenFor === b.id}
 								{@const trackStageIds = data.pipeline.tracks.find((t) => t.id === b.trackId)?.stageIds ?? []}
 								<tr class="expand">
@@ -1147,7 +1367,7 @@
 				{/if}
 			</div>
 		{/if}
-		<p class="hint">Adding a stage, moving a book to another track, and adding or deleting tracks come next.</p>
+		
 	</section>
 
 	<!-- Team ────────────────────────────────────────────────────────────── -->

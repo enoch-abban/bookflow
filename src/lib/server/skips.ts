@@ -8,12 +8,9 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
 import { activityLog, bookStageSkips, books, dependencies, stageTracks, stages, tasks } from '#lib/server/db/schema.ts';
-import { bookLinks } from '../schedule/pattern.ts';
-import { deriveEnd, toWorkingDay } from '../schedule/calendar.ts';
 import { planRelink } from '../schedule/relink.ts';
-import { buildPredMap, earliestStart, propagate, settle, type SchedTask } from './scheduler.ts';
 import { loadSeriesContext } from './series-context.ts';
-import { writeTaskChanges } from './schedule-write.ts';
+import { planNewTasks, writePlan } from './stage-tasks.ts';
 import { seriesPattern } from './pipeline-structure.ts';
 import { deleteTasks, isStarted, logger } from './removal.ts';
 
@@ -75,78 +72,32 @@ export async function liftSkip(opts: { bookId: string; stageId: string; actorId:
 
 	const ctx = await loadSeriesContext(book.seriesId);
 	const original = new Map([...ctx.taskMap].map(([k, v]) => [k, { ...v }]));
-	const bookTasks = ctx.tasksData.filter((t) => t.bookId === book.id);
-	const newId = ulid();
-	const taskOfStage = new Map(bookTasks.map((t) => [t.stageId, t.id]));
-	taskOfStage.set(stage.id, newId);
-
-	const wanted: Dep[] = bookLinks(new Set(taskOfStage.keys()), await seriesPattern(book.seriesId))
-		.filter((l) => l.from === stage.id || l.to === stage.id)
-		.map((l) => ({ id: ulid(), predecessorId: taskOfStage.get(l.from)!, successorId: taskOfStage.get(l.to)!, lagDays: l.lagDays }));
-
-	// Links the skip had bridged: a predecessor of the new task straight to one of its successors.
-	const preds = wanted.filter((d) => d.successorId === newId).map((d) => d.predecessorId);
-	const succs = wanted.filter((d) => d.predecessorId === newId).map((d) => d.successorId);
-	const bridged: Dep[] = bookTasks.length
-		? (await db.select().from(dependencies).where(inArray(dependencies.successorId, bookTasks.map((t) => t.id))))
-			.filter((d) => preds.includes(d.predecessorId) && succs.includes(d.successorId))
+	const deps: Dep[] = ctx.taskMap.size
+		? await db.select().from(dependencies).where(inArray(dependencies.successorId, [...ctx.taskMap.keys()]))
 		: [];
-
-	const deps = [
-		...ctx.depList.filter((d) => !bridged.some((b) => b.predecessorId === d.predecessorId && b.successorId === d.successorId)),
-		...wanted,
-	];
-	const start = toWorkingDay(opts.today);
-	const draft: SchedTask = {
-		id: newId, startDate: start, endDate: deriveEnd(start, stage.defaultDays), durationDays: stage.defaultDays,
-		status: 'not_started', windowId: null, scheduleState: 'scheduled', ignoresWindows: !!stage.ignoresWindows, version: 1,
-	};
-	ctx.taskMap.set(newId, draft);
-	const earliest = earliestStart(newId, ctx.taskMap, buildPredMap(deps).predMap);
-	const placed = settle(draft, earliest && earliest > start ? earliest : start, ctx.rules);
-	ctx.taskMap.set(newId, { ...draft, ...placed });
-	const pushed = propagate(new Set([newId]), ctx.taskMap, deps, ctx.rules);
-
+	const plan = planNewTasks({ ctx, deps, gains: [{ bookId: book.id, stages: [stage] }], pattern: await seriesPattern(book.seriesId), today: opts.today });
+	const task = plan.newTasks[0];
 	const winLabel = new Map(ctx.windows.map((w) => [w.id, w.label]));
 	const report = {
 		book: book.code,
 		stage: stage.name,
 		task: {
-			startDate: placed.startDate, endDate: placed.endDate, scheduleState: placed.scheduleState,
-			window: placed.windowId ? winLabel.get(placed.windowId) ?? null : null,
+			startDate: task.startDate, endDate: task.endDate, scheduleState: task.scheduleState,
+			window: task.windowId ? winLabel.get(task.windowId) ?? null : null,
 		},
-		linked: wanted.length,
-		unlinked: bridged.length,
-		pushed: [...pushed].map(([id, p]) => ({ label: ctx.labels.get(id) ?? id, from: original.get(id)!.startDate, to: p.startDate, scheduleState: p.scheduleState })),
+		linked: plan.links.length,
+		unlinked: plan.unlinked.length,
+		pushed: [...plan.pushed].map(([id, p]) => ({ label: ctx.labels.get(id) ?? id, from: original.get(id)!.startDate, to: p.startDate, scheduleState: p.scheduleState })),
 	};
 	if (opts.preview) return { preview: true as const, ...report };
 
 	const batchId = ulid();
 	const now = new Date().toISOString();
 	const log = logger(book.seriesId, opts.actorId, batchId, now);
-	const newTask = {
-		id: newId, bookId: book.id, stageId: stage.id, windowId: placed.windowId, scheduleState: placed.scheduleState ?? 'scheduled',
-		title: stage.name, startDate: placed.startDate, endDate: placed.endDate, durationDays: stage.defaultDays,
-		status: 'not_started' as const, createdAt: now, updatedAt: now,
-	};
-
 	await db.transaction(async (tx) => {
 		await tx.delete(bookStageSkips).where(and(eq(bookStageSkips.bookId, book.id), eq(bookStageSkips.stageId, stage.id)));
 		await tx.insert(activityLog).values(log('skip', `${book.id}:${stage.id}`, 'delete', { bookId: book.id, stageId: stage.id }, null));
-		await tx.insert(tasks).values(newTask);
-		await tx.insert(activityLog).values(log('task', newId, 'create', null, newTask));
-		for (const b of bridged) {
-			await tx.delete(dependencies).where(eq(dependencies.id, b.id));
-			await tx.insert(activityLog).values(log('dependency', b.id, 'delete', b, null));
-		}
-		for (const d of wanted) {
-			await tx.insert(dependencies).values(d);
-			await tx.insert(activityLog).values(log('dependency', d.id, 'create', null, d));
-		}
-		await writeTaskChanges(tx, {
-			seriesId: book.seriesId, actorId: opts.actorId, batchId, now, original,
-			changes: [...pushed].map(([id, p]) => ({ id, ...p, windowId: p.windowId ?? null, action: p.scheduleState === 'unscheduled' ? 'unschedule' : 'move' })),
-		});
+		await writePlan(tx, plan, { seriesId: book.seriesId, actorId: opts.actorId, batchId, now, log, original });
 	});
 	return { preview: false as const, ...report, batchId };
 }

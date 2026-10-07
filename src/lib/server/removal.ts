@@ -24,7 +24,7 @@ const STARTED = ['in_progress', 'in_review', 'returned'];
 export const isStarted = (t: Pick<TaskRow, 'status' | 'statusBeforeBlock'>) =>
 	STARTED.includes(t.status) || (t.status === 'blocked' && STARTED.includes(t.statusBeforeBlock ?? ''));
 
-export type Log = (entity: 'book' | 'stage' | 'task' | 'dependency' | 'skip' | 'stage_link', entityId: string, action: string, before: unknown, after: unknown) => typeof activityLog.$inferInsert;
+export type Log = (entity: 'book' | 'stage' | 'track' | 'task' | 'dependency' | 'skip' | 'stage_link', entityId: string, action: string, before: unknown, after: unknown) => typeof activityLog.$inferInsert;
 
 export function logger(seriesId: string, actorId: string, batchId: string, now: string): Log {
 	return (entity, entityId, action, before, after) => ({

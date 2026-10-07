@@ -6,6 +6,7 @@ import { db } from '#lib/server/db/index.ts';
 import { activityLog, tracks } from '#lib/server/db/schema.ts';
 import { parseBody, requireCoord } from '#lib/server/api-auth.ts';
 import { parseOr400, updateTrackSchema } from '#lib/server/validation.ts';
+import { deleteTrack } from '#lib/server/pipeline-grow.ts';
 
 // PATCH /api/tracks/:id — rename a track.
 export const PATCH: RequestHandler = async ({ params, request, locals }) => {
@@ -24,4 +25,12 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 		return row;
 	});
 	return json({ track });
+};
+
+// DELETE /api/tracks/:id — refused while any book follows it.
+export const DELETE: RequestHandler = async ({ params, locals }) => {
+	const track = await db.select().from(tracks).where(eq(tracks.id, params.id)).then((r) => r[0]);
+	if (!track) throw error(404, 'Track not found');
+	const { personId } = await requireCoord(locals, track.seriesId);
+	return json(await deleteTrack({ trackId: track.id, actorId: personId }));
 };

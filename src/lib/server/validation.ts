@@ -132,3 +132,25 @@ export const addBookSchema = z.object({
 	]),
 	preview: z.boolean().optional()
 });
+
+export const addStageSchema = z.object({
+	name: z.string().trim().min(1, 'Enter a stage name.').max(60),
+	category: z.enum(['creation', 'review', 'layout', 'publish', 'gate', 'production']),
+	defaultDays: z.number().int().min(0).max(60),
+	isReview: z.boolean().optional(),
+	isExternal: z.boolean().optional(),
+	ignoresWindows: z.boolean().optional(),
+	trackIds: z.array(z.string()).min(1, 'Choose at least one track.'),
+	after: z.string().nullable().optional(),
+	before: z.string().nullable().optional(),
+	mode: z.enum(['insert', 'alongside']),
+	bookIds: z.array(z.string()).optional(),
+	preview: z.boolean().optional()
+});
+
+export const changeTrackSchema = z.object({ trackId: z.string().min(1, 'Choose a track.'), preview: z.boolean().optional() });
+
+export const createTrackSchema = z.object({
+	name: z.string().trim().min(1, 'Enter a track name.').max(60),
+	stageIds: z.array(z.string())
+});
