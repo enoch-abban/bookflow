@@ -2,6 +2,10 @@ import { defineEnvVars } from '@sveltejs/kit/env';
 
 export const variables = defineEnvVars({
 	DATABASE_URL: { description: 'The database connection string.' },
+	DATABASE_AUTH_TOKEN: {
+		description: 'Auth token for a remote libSQL (Turso) database. Leave empty for a local `file:` database.',
+		schema: (value) => value || undefined
+	},
 	ORIGIN: {
 		description: 'The app origin (base URL), e.g. `http://localhost:5173`.'
 	},

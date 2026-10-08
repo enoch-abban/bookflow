@@ -24,7 +24,7 @@ if (!who || !rawEmail) {
 }
 const email = rawEmail.trim().toLowerCase();
 
-const db = drizzle(createClient({ url: process.env.DATABASE_URL! }));
+const db = drizzle(createClient({ url: process.env.DATABASE_URL!, authToken: process.env.DATABASE_AUTH_TOKEN || undefined }));
 
 const matches = await db
 	.select()

@@ -8,6 +8,8 @@ let resend: Resend | null = null;
 /** Send a transactional email. Without RESEND_API_KEY it is logged instead (local dev). */
 export async function sendEmail({ to, subject, text }: Mail): Promise<void> {
 	if (!RESEND_API_KEY) {
+		// A logged sign-in code reaches no one, so a live deploy must not fall back silently.
+		if (process.env.VERCEL_ENV === 'production') throw new Error('RESEND_API_KEY is not set');
 		console.info(`\n[email] to: ${to}\n[email] subject: ${subject}\n${text}\n`);
 		return;
 	}

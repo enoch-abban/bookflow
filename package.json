@@ -21,7 +21,11 @@
 		"db:studio": "drizzle-kit studio",
 		"db:seed": "npx tsx src/lib/server/db/seed/esteam-l2.ts",
 		"auth:schema": "auth generate --config src/lib/server/auth.ts --output src/lib/server/db/auth.schema.ts --yes",
-		"auth:invite": "npx tsx src/lib/server/db/seed/invite-link.ts"
+		"auth:invite": "npx tsx src/lib/server/db/seed/invite-link.ts",
+		"db:migrate:prod": "node --env-file=.env.production node_modules/drizzle-kit/bin.cjs migrate",
+		"db:seed:prod": "npx tsx --env-file=.env.production src/lib/server/db/seed/esteam-l2.ts",
+		"auth:invite:prod": "npx tsx --env-file=.env.production src/lib/server/db/seed/invite-link.ts",
+		"build:vercel": "if [ \"$VERCEL_ENV\" = production ]; then drizzle-kit migrate; fi && vite build"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",

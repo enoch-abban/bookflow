@@ -38,7 +38,7 @@ import { definitionFrom } from '../../../templates/definition.ts';
 import { checkExplicitMove, isWorkingDay, type WindowRules } from '../../scheduler.ts';
 import { bookLinks } from '../../../schedule/pattern.ts';
 
-const client = createClient({ url: process.env.DATABASE_URL! });
+const client = createClient({ url: process.env.DATABASE_URL!, authToken: process.env.DATABASE_AUTH_TOKEN || undefined });
 const db = drizzle(client);
 const NOW = new Date().toISOString();
 
