@@ -26,6 +26,14 @@
 		goto(`/s/${id}${keep}`);
 	}
 
+	// Which nav link is "you are here". Book pages live under the Matrix.
+	function isCurrent(href: string) {
+		const path = page.url.pathname;
+		if (href === `/s/${data.seriesId}`) return path === href || path.startsWith(`${href}/books/`);
+		return path === href || path.startsWith(`${href}/`);
+	}
+	const cur = (href: string) => (isCurrent(href) ? 'page' : undefined);
+
 	async function signOut() {
 		await fetch('/api/auth/sign-out', {
 			method: 'POST',
@@ -46,13 +54,13 @@
 	{/if}
 	<div class="nav-links">
 		{#if data.seriesId}
-			<a href="/s/{data.seriesId}">Matrix</a>
-			<a href="/s/{data.seriesId}/swimlane">Swimlane</a>
-			<a href="/s/{data.seriesId}/workload">Workload</a>
+			<a href="/s/{data.seriesId}" aria-current={cur(`/s/${data.seriesId}`)}>Matrix</a>
+			<a href="/s/{data.seriesId}/swimlane" aria-current={cur(`/s/${data.seriesId}/swimlane`)}>Swimlane</a>
+			<a href="/s/{data.seriesId}/workload" aria-current={cur(`/s/${data.seriesId}/workload`)}>Workload</a>
 		{/if}
-		<a href="/me">My tasks</a>
-		{#if data.seriesId && data.canManageSeries}<a href="/s/{data.seriesId}/baselines">Baselines</a><a href="/s/{data.seriesId}/activity">Activity</a><a href="/s/{data.seriesId}/settings">Settings</a>{/if}
-		{#if data.isAdmin}<span class="admin-links" data-tour="admin-links"><a href="/templates">Templates</a><a href="/settings/people">People</a><a href="/settings/calendar">Calendar</a></span>{/if}
+		<a href="/me" aria-current={cur('/me')}>My tasks</a>
+		{#if data.seriesId && data.canManageSeries}<a href="/s/{data.seriesId}/baselines" aria-current={cur(`/s/${data.seriesId}/baselines`)}>Baselines</a><a href="/s/{data.seriesId}/activity" aria-current={cur(`/s/${data.seriesId}/activity`)}>Activity</a><a href="/s/{data.seriesId}/settings" aria-current={cur(`/s/${data.seriesId}/settings`)}>Settings</a>{/if}
+		{#if data.isAdmin}<span class="admin-links" data-tour="admin-links"><a href="/templates" aria-current={cur('/templates')}>Templates</a><a href="/settings/people" aria-current={cur('/settings/people')}>People</a><a href="/settings/calendar" aria-current={cur('/settings/calendar')}>Calendar</a></span>{/if}
 	</div>
 	{#if data.user}
 		<div class="nav-user">

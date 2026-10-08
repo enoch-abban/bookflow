@@ -86,16 +86,25 @@ button { cursor: pointer; font: inherit; }
 	color: var(--primary);
 	letter-spacing: -0.02em;
 }
-.app-nav .nav-links { display: flex; gap: var(--sp-4); }
+/* Links fill the bar's height so the current one can sit its underline on the nav border. */
+.app-nav .nav-links { display: flex; gap: var(--sp-4); align-self: stretch; }
 .app-nav .nav-links a {
+	display: flex;
+	align-items: center;
 	font-size: 13px;
 	font-weight: 500;
 	color: var(--muted-foreground);
-	padding: var(--sp-1) var(--sp-2);
-	border-radius: var(--radius-sm);
+	padding: 0 var(--sp-2);
+	border-top: 2px solid transparent;
+	border-bottom: 2px solid transparent;
+	margin-bottom: -1px;
 }
-.app-nav .nav-links a:hover,
-.app-nav .nav-links a.active { color: var(--primary); text-decoration: none; }
+.app-nav .nav-links a:hover { color: var(--primary); text-decoration: none; }
+.app-nav .nav-links a[aria-current="page"] {
+	color: var(--primary);
+	font-weight: 600;
+	border-bottom-color: var(--primary);
+}
 
 /* Chips ─────────────────────────────────────────────────────────────────────  */
 .chip {
