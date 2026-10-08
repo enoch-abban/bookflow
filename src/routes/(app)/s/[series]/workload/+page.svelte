@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { PageProps } from './$types';
+	import { statusLabel } from '#lib/status.ts';
 
 	let { data }: PageProps = $props();
 	let picked = $state<{ personId: string; date: string } | null>(null);
@@ -9,10 +10,6 @@
 	const DOW = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 	const dow = (d: string) => DOW[new Date(d + 'T12:00:00Z').getUTCDay()];
 
-	const STATUS_LABEL: Record<string, string> = {
-		not_started: 'Not started', in_progress: 'In progress', in_review: 'In review',
-		returned: 'Returned', blocked: 'Blocked', done: 'Done',
-	};
 
 	// Week headers: runs of days sharing a Monday, labelled by that Monday.
 	function mondayOf(d: string) {
@@ -152,7 +149,7 @@
 						<a href="/s/{data.series.id}/books/{encodeURIComponent(t.book)}" class="t-book">{t.book}</a>
 						<span class="t-stage">{t.stage}</span>
 						<span class="t-dates">{fmt(t.startDate)}{t.endDate !== t.startDate ? ` – ${fmt(t.endDate)}` : ''}</span>
-						<span class="chip chip--inline" data-status={t.status}>{STATUS_LABEL[t.status] ?? t.status}</span>
+						<span class="chip chip--inline" data-status={t.status}>{statusLabel(t.status)}</span>
 					</li>
 				{/each}
 			</ul>

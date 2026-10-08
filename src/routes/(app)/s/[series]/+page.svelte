@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { PageProps } from './$types';
+	import { statusLabel } from '#lib/status.ts';
 
 	let { data }: PageProps = $props();
 
@@ -61,14 +62,6 @@
 		return `${['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][+mm]} ${+dd}, ${yr}`;
 	}
 
-	const STATUS_LABEL: Record<string, string> = {
-		not_started: 'Not started',
-		in_progress: 'In progress',
-		in_review:   'In review',
-		returned:    'Returned',
-		done:        'Done',
-		blocked:     'Blocked',
-	};
 
 	function stageApplies(trackId: string, stageId: string): boolean {
 		return stagesForTrack.get(trackId)?.has(stageId) ?? false;
@@ -146,9 +139,9 @@
 										<div
 											class="chip"
 											data-status={task.status}
-											title="{STATUS_LABEL[task.status]} · {task.endDate}"
+											title="{statusLabel(task.status)} · {task.endDate}"
 										>
-											<span class="chip-status">{STATUS_LABEL[task.status]}</span>
+											<span class="chip-status">{statusLabel(task.status)}</span>
 											{#if lead}
 												<span class="chip-avatar">{initials(lead.displayName)}</span>
 											{/if}

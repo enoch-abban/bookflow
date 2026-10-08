@@ -4,6 +4,7 @@
 	import { latestEnd, sortWindows, windowAt } from '#lib/schedule/windows.ts';
 	import { setHolidays } from '#lib/schedule/calendar.ts';
 	import { criticalPath } from '#lib/schedule/critical.ts';
+	import { statusLabel } from '#lib/status.ts';
 
 	// ── Types ─────────────────────────────────────────────────────────────────
 
@@ -705,6 +706,15 @@
 		return `st-${s.replace('_', '-')}`;
 	}
 
+	// Hover text for a bar or gate: stage · book · status, then any schedule warnings.
+	function tooltip(task: Task, notes: (string | false | undefined)[] = []) {
+		const status = task.status === 'blocked' && task.statusBeforeBlock
+			? `Blocked (was ${statusLabel(task.statusBeforeBlock)})`
+			: statusLabel(task.status);
+		const parts = [stageMap.get(task.stageId)?.name ?? '', bookMap.get(task.bookId)?.code ?? '', status, ...notes];
+		return parts.filter(Boolean).join(' · ');
+	}
+
 	function arrow(x1: number, y1: number, x2: number, y2: number): string {
 		const cx = (x2 - x1) * 0.45;
 		return `M ${x1} ${y1} C ${x1 + cx} ${y1} ${x2 - cx} ${y2} ${x2} ${y2}`;
@@ -924,7 +934,7 @@
 								<div
 									class="sl-gate"
 									style="left:{bx + DAY_W / 2 - 9}px;top:{rowTop + ROW_H / 2 - 9}px"
-									title={stage?.name ?? ''}
+									title={tooltip(task)}
 									class:cp-dim={isCpFaded}
 									class:cp-on={isCritical}
 								></div>
@@ -945,7 +955,11 @@
 									onblur={() => hoverId === task.id && (hoverId = null)}
 									role="button"
 									tabindex="0"
-									title="{stage?.name ?? ''} · {bookMap.get(task.bookId)?.code ?? ''}{ovf ? ` · overflows ${ovf.days} working day${ovf.days === 1 ? '' : 's'}` : ''}{outside ? ' · Outside window' : ''}{lane.overflow ? ' · Unscheduled: no window has room' : ''}"
+									title={tooltip(task, [
+										!!ovf && `overflows ${ovf.days} working day${ovf.days === 1 ? '' : 's'}`,
+										outside && 'Outside window',
+										lane.overflow && 'Unscheduled: no window has room'
+									])}
 								>
 									{#if ovf}
 										<!-- The part past the window edge: faded, behind a dashed edge -->

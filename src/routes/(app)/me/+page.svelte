@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { PageProps } from './$types';
 	import { enhance } from '$app/forms';
+	import { statusLabel } from '#lib/status.ts';
 
 	let { data, form }: PageProps = $props();
 	let returning = $state<string | null>(null);
@@ -10,13 +11,6 @@
 		return `${['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][+mm]} ${+day}, ${yr}`;
 	}
 
-	const STATUS_LABEL: Record<string, string> = {
-		not_started: 'Not started',
-		in_progress: 'In progress',
-		in_review:   'In review',
-		returned:    'Returned',
-		blocked:     'Blocked',
-	};
 </script>
 
 <div class="me-page">
@@ -97,7 +91,7 @@
 									<a href="/s/{row.seriesId}" class="series-link">{row.seriesName}</a>
 									<span class="task-due">Due {fmtDate(row.dueDate ?? row.endDate)}</span>
 									<span class="chip chip--inline" data-status={row.status}>
-										{STATUS_LABEL[row.status] ?? row.status}
+										{statusLabel(row.status)}
 									</span>
 								</div>
 							</div>

@@ -3,6 +3,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '#lib/api-client.ts';
 	import { isValidIsbn13 } from '#lib/isbn.ts';
+	import { STATUS_LABEL, statusLabel } from '#lib/status.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -143,10 +144,8 @@
 		await invalidateAll();
 	}
 
-	const STATUS_LABEL: Record<string, string> = {
-		not_started: 'Not started', in_progress: 'In progress', in_review: 'In review',
-		returned: 'Returned', done: 'Done', blocked: 'Blocked', skipped: 'Skipped', missing: 'No task'
-	};
+	// Pipeline steps can also be skipped or have no task at all.
+	const STEP_LABEL: Record<string, string> = { ...STATUS_LABEL, skipped: 'Skipped', missing: 'No task' };
 	const fmtDate = (iso: string | null) =>
 		iso ? new Date(iso + (iso.length === 10 ? 'T12:00:00Z' : '')).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : '–';
 	const fmtDateTime = (iso: string) => new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -234,7 +233,7 @@
 				<li class="step" data-state={s.state} data-category={s.category}>
 					<span class="dot" aria-hidden="true">{s.category === 'gate' ? '' : s.state === 'done' ? '✓' : i + 1}</span>
 					<span class="step-name">{s.name}</span>
-					<span class="step-state">{STATUS_LABEL[s.state] ?? s.state}</span>
+					<span class="step-state">{STEP_LABEL[s.state] ?? s.state}</span>
 				</li>
 			{/each}
 		</ol>
@@ -270,7 +269,7 @@
 								{#if t.feedbackUrl}<a class="muted" href={t.feedbackUrl} target="_blank" rel="noopener">Feedback file</a>{/if}
 							</td>
 							<td>
-								<span class="status" data-status={t.status}>{STATUS_LABEL[t.status]}</span>
+								<span class="status" data-status={t.status}>{statusLabel(t.status)}</span>
 								{#if late(t)}<span class="flag">Late</span>{/if}
 								{#if t.status === 'in_review'}<div class="muted">waiting on {data.waitingOn[t.id]?.length ? data.waitingOn[t.id].join(', ') : 'a coordinator'}</div>{/if}
 								{#if t.scheduleState === 'unscheduled'}<span class="flag flag--warn">Unscheduled</span>{/if}
@@ -318,7 +317,7 @@
 				<div class="notice" class:notice--ok={approvalMessage.ok} class:notice--error={!approvalMessage.ok} role="status">
 					{approvalMessage.text}
 					{#if blockers.length}
-						<ul class="blockers">{#each blockers as b (b.stage)}<li>{b.stage}: {STATUS_LABEL[b.status] ?? b.status}</li>{/each}</ul>
+						<ul class="blockers">{#each blockers as b (b.stage)}<li>{b.stage}: {statusLabel(b.status)}</li>{/each}</ul>
 					{/if}
 				</div>
 			{/if}

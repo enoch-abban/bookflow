@@ -1,6 +1,8 @@
 // Plain-language lines for activity log entries (spec: Activity log). Pure, so the page,
 // the undo endpoint and tests share one wording.
 
+import { statusLabel } from '../status.ts';
+
 export type LogEntry = {
 	id: string; entity: string; entityId: string; action: string;
 	before: Record<string, unknown> | null; after: Record<string, unknown> | null;
@@ -19,9 +21,6 @@ export type Names = {
 const MONTHS = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 export const fmtDate = (d: unknown) => (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}/.test(d) ? `${MONTHS[+d.slice(5, 7)]} ${+d.slice(8, 10)}` : String(d));
 const span = (o: Record<string, unknown>) => (o.startDate === o.endDate ? fmtDate(o.startDate) : `${fmtDate(o.startDate)} – ${fmtDate(o.endDate)}`);
-const STATUS: Record<string, string> = {
-	not_started: 'Not started', in_progress: 'In progress', in_review: 'In review', returned: 'Returned', done: 'Done', blocked: 'Blocked',
-};
 
 // Settings fields in words, for series, stage, book and track updates.
 const FIELD: Record<string, string> = {
@@ -69,7 +68,7 @@ export function describe(e: LogEntry, n: Names): string {
 
 	switch (e.entity) {
 		case 'task':
-			if (e.action === 'status') return `${name}: ${STATUS[b.status as string] ?? b.status} → ${STATUS[a.status as string] ?? a.status}`;
+			if (e.action === 'status') return `${name}: ${statusLabel(String(b.status))} → ${statusLabel(String(a.status))}`;
 			if (e.action === 'deadline') return `${name}: due date ${a.dueDate ? fmtDate(a.dueDate) : 'cleared'}`;
 			if (e.action === 'create') return `Added task ${name}`;
 			if (e.action === 'delete') return `Removed task ${name}`;
