@@ -60,7 +60,7 @@
 				<ul>
 					{#each data.baselines as b, i (b.id)}
 						<li>
-							<a href="?b={b.id}" data-sveltekit-noscroll aria-current={b.id === data.selected.id ? 'true' : undefined}>
+							<a href="?b={b.id}" data-sveltekit-reset="false" aria-current={b.id === data.selected.id ? 'true' : undefined}>
 								<span class="b-name">{b.name}{#if i === 0}<span class="tag">Latest</span>{/if}</span>
 								<span class="b-meta">{fmtFull(b.createdAt)} · {b.taskCount} tasks</span>
 							</a>

@@ -68,15 +68,15 @@
 			</p>
 		</div>
 		<nav class="range" aria-label="Date range">
-			<a class="btn btn-ghost" href={link({ from: data.prev })} data-sveltekit-noscroll>← Earlier</a>
+			<a class="btn btn-ghost" href={link({ from: data.prev })} data-sveltekit-reset="false">← Earlier</a>
 			<span class="range-label">{fmt(data.days[0] ?? data.from)} – {fmt(data.days.at(-1) ?? data.from)}</span>
-			<a class="btn btn-ghost" href={link({ from: data.next })} data-sveltekit-noscroll>Later →</a>
-			<a class="btn btn-ghost" href={link({ from: data.today })} data-sveltekit-noscroll>This week</a>
+			<a class="btn btn-ghost" href={link({ from: data.next })} data-sveltekit-reset="false">Later →</a>
+			<a class="btn btn-ghost" href={link({ from: data.today })} data-sveltekit-reset="false">This week</a>
 		</nav>
 	</header>
 
 	<div class="toolbar">
-		<a class="toggle" href={link({ done: !data.includeDone })} data-sveltekit-noscroll>
+		<a class="toggle" href={link({ done: !data.includeDone })} data-sveltekit-reset="false">
 			<span class="box" aria-hidden="true">{data.includeDone ? '✓' : ''}</span> Include finished tasks
 		</a>
 		<span class="legend">
