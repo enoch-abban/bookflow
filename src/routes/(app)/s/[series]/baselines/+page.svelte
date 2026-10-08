@@ -40,7 +40,7 @@
 			<h1>Baselines</h1>
 			<p class="sub">Frozen copies of the plan's dates, to measure slippage against. The book pages and task drawer compare with the latest one.</p>
 		</div>
-		<form class="save" onsubmit={save}>
+		<form class="save" data-tour="baseline-save" onsubmit={save}>
 			<label class="field">
 				<span>Save the current plan as</span>
 				<input class="input" bind:value={name} placeholder={data.suggestedName} maxlength="60" />

@@ -10,7 +10,7 @@ const LAST_SERIES = 'bookflow_series';
 // keep the last series opened, remembered in a cookie, so its links stay one click away.
 export const load: LayoutServerLoad = async ({ locals, params, cookies }) => {
 	const me = locals.user
-		? await db.select({ id: people.id, isAdmin: people.isAdmin }).from(people).where(eq(people.userId, locals.user.id)).then(r => r[0])
+		? await db.select({ id: people.id, isAdmin: people.isAdmin, tourDoneAt: people.tourDoneAt }).from(people).where(eq(people.userId, locals.user.id)).then(r => r[0])
 		: undefined;
 	const seriesList = await visibleSeries(me?.id ?? null, !!me?.isAdmin);
 
@@ -31,5 +31,8 @@ export const load: LayoutServerLoad = async ({ locals, params, cookies }) => {
 		canManageSeries: !!me?.isAdmin || role === 'coordinator',
 		seriesId: current?.id ?? null,
 		seriesList,
+		// For the guided tour: what to show, and whether it still starts by itself.
+		role: me?.isAdmin ? 'admin' as const : (role ?? 'contributor') as 'coordinator' | 'contributor' | 'viewer',
+		tourDone: !me || !!me.tourDoneAt,
 	};
 };

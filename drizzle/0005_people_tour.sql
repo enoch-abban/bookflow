@@ -1,0 +1,1 @@
+ALTER TABLE `people` ADD `tour_done_at` text;

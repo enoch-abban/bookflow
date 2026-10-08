@@ -30,7 +30,7 @@
 	{#if form?.message}<p class="notice notice--error" role="alert">{form.message}</p>{/if}
 
 	{#if data.reviews.length}
-		<section class="task-group">
+		<section class="task-group" data-tour="my-tasks">
 			<h2 class="group-heading">Waiting for my review <span class="group-count">{data.reviews.length}</span></h2>
 			<div class="task-list">
 				{#each data.reviews as r (r.taskId)}
@@ -71,16 +71,16 @@
 	{/if}
 
 	{#if !data.person}
-		<div class="empty-state">
+		<div class="empty-state" data-tour="my-tasks">
 			<p>Your account is not yet linked to a team member. Ask your coordinator to invite you.</p>
 		</div>
 	{:else if data.groups.length === 0}
-		<div class="empty-state">
+		<div class="empty-state" data-tour="my-tasks">
 			<p>No open tasks assigned to you. You're all caught up!</p>
 		</div>
 	{:else}
 		{#each data.groups as group (group.label)}
-			<section class="task-group" class:urgent={group.urgent}>
+			<section class="task-group" data-tour="my-tasks" class:urgent={group.urgent}>
 				<h2 class="group-heading">{group.label} <span class="group-count">{group.rows.length}</span></h2>
 				<div class="task-list">
 					{#each group.rows as row (row.taskId)}

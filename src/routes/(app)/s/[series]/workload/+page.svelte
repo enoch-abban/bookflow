@@ -92,7 +92,7 @@
 	{#if data.rows.length === 0}
 		<p class="empty">This series has no members yet.</p>
 	{:else}
-		<div class="grid-wrap">
+		<div class="grid-wrap" data-tour="workload-grid">
 			<table class="grid">
 				<thead>
 					<tr>

@@ -142,7 +142,8 @@ export const people = sqliteTable('people', {
 	displayName: text('display_name').notNull(),
 	email: text('email').unique(),
 	isAdmin: integer('is_admin').notNull().default(0),
-	active: integer('active').notNull().default(1)
+	active: integer('active').notNull().default(1),
+	tourDoneAt: text('tour_done_at') // set when they finish or skip the guided tour; it starts once until then
 });
 
 export const seriesMembers = sqliteTable(

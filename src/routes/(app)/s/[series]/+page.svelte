@@ -85,7 +85,7 @@
 </script>
 
 <!-- ── Header strip ──────────────────────────────────────────────────────── -->
-<div class="series-strip">
+<div class="series-strip" data-tour="series-strip">
 	<div class="strip-title">
 		<h1 class="series-name">{data.series.name}</h1>
 		<span class="strip-date">Today: {fmtFull(data.stats.today)}</span>
@@ -115,7 +115,7 @@
 	</div>
 {:else}
 <div class="matrix-outer">
-	<table class="matrix">
+	<table class="matrix" data-tour="matrix">
 		<thead>
 			<tr>
 				<th class="col-book th-book">Book</th>

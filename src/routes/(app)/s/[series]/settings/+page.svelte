@@ -997,7 +997,7 @@
 
 	<!-- Pipeline ────────────────────────────────────────────────────────── -->
 	<section id="pipeline" class="card">
-		<h2>Pipeline</h2>
+		<h2 data-tour="settings-pipeline">Pipeline</h2>
 		<p class="lede">
 			Tracks, stages and books. Edits here never create or delete tasks. Changing a stage's window exemption or deadline
 			shows the impact before anything is saved.

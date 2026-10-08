@@ -727,7 +727,7 @@
 	<div class="sl-toolbar">
 		<span class="sl-series-name">{series.name}</span>
 		<div class="sl-toolbar-actions">
-			<div class="btn-seg" role="group" aria-label="Undo and redo">
+			<div class="btn-seg" data-tour="undo-redo" role="group" aria-label="Undo and redo">
 				<button
 					onclick={() => step('undo')}
 					disabled={!stack.undo || stepping}
@@ -746,7 +746,7 @@
 				>
 			</div>
 			<button
-				class="btn-toggle"
+				class="btn-toggle" data-tour="critical-path"
 				class:on={critPath}
 				onclick={toggleCritPath}
 				aria-pressed={critPath}
@@ -786,6 +786,7 @@
 	<div
 		class="sl-outer"
 		bind:this={outerEl}
+		data-tour="swimlane-canvas"
 		role="presentation"
 		onpointermove={resizing ? onEdgeMove : onPointerMove}
 		onpointerup={resizing ? onEdgeUp : onPointerUp}

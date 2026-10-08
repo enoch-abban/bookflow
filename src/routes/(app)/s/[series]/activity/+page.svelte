@@ -61,12 +61,12 @@
 	{#if notice}<p class="notice notice--{notice.kind}" role={notice.kind === 'error' ? 'alert' : 'status'}>{notice.text}</p>{/if}
 
 	{#if data.items.length === 0}
-		<p class="empty">{data.before ? 'No older changes.' : 'No changes yet.'}</p>
+		<p class="empty" data-tour="activity-list">{data.before ? 'No older changes.' : 'No changes yet.'}</p>
 	{:else}
 		{#each days as d (d.day)}
 			<section>
 				<h2 class="day">{d.day}</h2>
-				<ol class="items">
+				<ol class="items" data-tour="activity-list">
 					{#each d.items as it (it.key)}
 						<li class="item" data-kind={it.kind} class:reversed={!!it.reversedBy}>
 							<div class="item-main">

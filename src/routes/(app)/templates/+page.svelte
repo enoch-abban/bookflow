@@ -55,7 +55,7 @@
 
 <div class="tpl-page">
 	<header>
-		<h1>Templates</h1>
+		<h1 data-tour="templates">Templates</h1>
 		<p class="sub">Saved pipelines that a new series can start from: tracks, stages with their default durations, the dependency pattern, team labels and settings. Windows are not saved, since their dates belong to one run.</p>
 	</header>
 
