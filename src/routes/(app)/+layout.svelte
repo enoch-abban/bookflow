@@ -19,6 +19,7 @@
 		<div class="nav-links">
 			<a href="/s/{data.seriesId}">Matrix</a>
 			<a href="/s/{data.seriesId}/swimlane">Swimlane</a>
+			<a href="/s/{data.seriesId}/workload">Workload</a>
 			<a href="/me">My tasks</a>
 			{#if data.canManageSeries}<a href="/s/{data.seriesId}/settings">Settings</a>{/if}
 			{#if data.isAdmin}<a href="/settings/people">People</a><a href="/settings/calendar">Calendar</a>{/if}
