@@ -199,3 +199,7 @@ export const reviewSchema = z.object({
 });
 
 export const commentSchema = z.object({ body: z.string().trim().min(1, 'Write a comment first.').max(2000) });
+
+export const baselineSchema = z.object({
+	name: z.string().trim().min(1, 'Enter a name for the baseline.').max(60, 'Keep the name under 60 characters.')
+});
