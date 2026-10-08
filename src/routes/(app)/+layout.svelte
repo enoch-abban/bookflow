@@ -21,7 +21,7 @@
 			<a href="/s/{data.seriesId}/swimlane">Swimlane</a>
 			<a href="/s/{data.seriesId}/workload">Workload</a>
 			<a href="/me">My tasks</a>
-			{#if data.canManageSeries}<a href="/s/{data.seriesId}/baselines">Baselines</a><a href="/s/{data.seriesId}/settings">Settings</a>{/if}
+			{#if data.canManageSeries}<a href="/s/{data.seriesId}/baselines">Baselines</a><a href="/s/{data.seriesId}/activity">Activity</a><a href="/s/{data.seriesId}/settings">Settings</a>{/if}
 			{#if data.isAdmin}<a href="/settings/people">People</a><a href="/settings/calendar">Calendar</a>{/if}
 		</div>
 	{/if}

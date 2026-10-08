@@ -372,11 +372,13 @@ export const activityLog = sqliteTable(
 		beforeJson: text('before_json'),
 		afterJson: text('after_json'),
 		batchId: text('batch_id'),
+		revertsBatchId: text('reverts_batch_id'), // on undo and redo entries: the batch they reverse
 		createdAt: text('created_at').notNull()
 	},
 	(t) => [
 		index('idx_log_feed').on(t.seriesId, t.id),
 		index('idx_log_entity').on(t.entity, t.entityId),
-		index('idx_log_batch').on(t.actorId, t.seriesId, t.batchId)
+		index('idx_log_batch').on(t.actorId, t.seriesId, t.batchId),
+		index('idx_log_reverts').on(t.revertsBatchId)
 	]
 );

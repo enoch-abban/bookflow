@@ -5,6 +5,8 @@ import { db } from '#lib/server/db/index.ts';
 import { activityLog, baselineTasks, books, bookStageSkips, dependencies, holidays, printRecords, series, stageLinks, stageTracks, stages, taskAssignees, taskComments, tasks, tracks, windows } from '#lib/server/db/schema.ts';
 import { and, asc, eq, inArray, or } from 'drizzle-orm';
 import { parseBody, resolvePerson } from '#lib/server/api-auth.ts';
+import { recentBatches, reversals, taskNames, undoRefusal } from '#lib/server/history.ts';
+import { batchKind } from '#lib/activity/describe.ts';
 
 type Body = { batchId: string; seriesId: string };
 
@@ -16,7 +18,8 @@ type SettingEntity = keyof typeof SETTING_TABLES;
 const isSetting = (entity: string): entity is SettingEntity => entity in SETTING_TABLES;
 
 // POST /api/undo — reverse one batch: task placements and due dates, and the series, stage
-// and window settings changed with them.
+// and window settings changed with them. Its entries carry revertsBatchId, so the activity
+// log can show what was undone and refuse to undo it twice.
 export const POST: RequestHandler = async ({ request, locals }) => {
 	const body = await parseBody<Body>(request);
 	if (!body.batchId) throw error(400, 'batchId required');
@@ -33,14 +36,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	const batchSeriesId = entries[0].seriesId!;
 
-	// Permission: actor undoing their own batch, or admin undoing any
+	// Permission: the actor's own batch within their last 50 on the series, or any batch for
+	// an admin; never a batch already reversed, and never an undo (that is what redo is for).
 	const actorId = entries[0].actorId;
-	if (!isAdmin && actorId !== personId) {
-		throw error(403, 'You can only undo your own batches');
-	}
-
-	// If not admin, check within-last-50-batches limit (approximate via log ordering)
-	// For MVP we skip the strict 50-batch window check
+	const kind = batchKind(entries.map((e) => ({ ...e, before: null, after: null })));
+	const reversed = (await reversals([body.batchId])).has(body.batchId);
+	const recent = isAdmin || !batchSeriesId ? [] : await recentBatches(personId, batchSeriesId);
+	const refusal = undoRefusal({ batchId: body.batchId, actorId, kind, reversed }, { personId, isAdmin }, recent);
+	if (refusal) throw error(reversed ? 409 : 403, refusal);
 
 	// A task can appear more than once in a batch (e.g. an overflow switch, then its refit):
 	// each field is restored from the earliest entry that recorded it, and the task must
@@ -157,9 +160,17 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	}
 
 	if (conflicting.length > 0 || seriesConflicts.length > 0 || windowConflicts.length > 0 || bookConflicts.length > 0) {
+		// Name what changed since, so the person knows whose later edit is in the way.
+		const named = await taskNames(batchSeriesId, [...new Set(conflicting)]);
+		const what = [
+			named.length && `${named.slice(0, 5).join(', ')}${named.length > 5 ? ` and ${named.length - 5} more` : ''}`,
+			bookConflicts.length && bookConflicts.join(', '),
+			seriesConflicts.length && 'series settings',
+			windowConflicts.length && `${windowConflicts.length === 1 ? 'a window' : 'windows'}`,
+		].filter(Boolean).join('; ');
 		return json({
 			error: 'conflict', taskIds: conflicting, seriesFields: seriesConflicts, windowIds: windowConflicts, books: bookConflicts,
-			message: bookConflicts.length ? `${bookConflicts.join(', ')} changed since; it can no longer be undone.` : undefined,
+			message: `Can't undo: ${what} changed since. Undoing would overwrite that later edit.`,
 		}, { status: 409 });
 	}
 
@@ -359,6 +370,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			const rows = await tx.select({ id: windows.id }).from(windows).where(eq(windows.seriesId, batchSeriesId)).orderBy(asc(windows.startDate));
 			for (const [i, r] of rows.entries()) await tx.update(windows).set({ sortOrder: i + 1 }).where(eq(windows.id, r.id));
 		}
+
+		// Every entry of the undo points back at the batch it reversed.
+		await tx.update(activityLog).set({ revertsBatchId: body.batchId }).where(eq(activityLog.batchId, undoBatch));
 	});
 
 	return json({ restored, undoBatchId: undoBatch });
