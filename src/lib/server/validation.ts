@@ -203,3 +203,24 @@ export const commentSchema = z.object({ body: z.string().trim().min(1, 'Write a 
 export const baselineSchema = z.object({
 	name: z.string().trim().min(1, 'Enter a name for the baseline.').max(60, 'Keep the name under 60 characters.')
 });
+
+const templateName = z.string().trim().min(1, 'Enter a name for the template.').max(80, 'Keep the name under 80 characters.');
+const templateDescription = z.string().trim().max(500, 'Keep the description under 500 characters.').nullable().optional();
+
+export const saveTemplateSchema = z.object({ name: templateName, description: templateDescription });
+export const updateTemplateSchema = z
+	.object({ name: templateName, description: templateDescription })
+	.partial()
+	.refine((v) => Object.keys(v).length > 0, 'Nothing to update.');
+
+export const createSeriesSchema = z
+	.object({
+		name: z.string().trim().min(1, 'Enter a series name.').max(120),
+		startDate: isoDate,
+		targetDate: isoDate,
+		hardLimitDate: isoDate.nullable().optional().or(z.literal('').transform(() => null)),
+		templateId: z.string().nullable().optional().or(z.literal('').transform(() => null)),
+		status: z.enum(['planning', 'active']).optional()
+	})
+	.refine((v) => v.targetDate >= v.startDate, { message: 'The target date must be on or after the start date.', path: ['targetDate'] })
+	.refine((v) => !v.hardLimitDate || v.hardLimitDate >= v.targetDate, { message: 'The hard limit must be on or after the target date.', path: ['hardLimitDate'] });

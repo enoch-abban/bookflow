@@ -108,6 +108,12 @@
 </div>
 
 <!-- ── Matrix ─────────────────────────────────────────────────────────────── -->
+{#if data.books.length === 0}
+	<div class="matrix-empty">
+		<p><strong>No books yet.</strong> {data.stages.length ? 'Add books to plan their tasks from the pipeline.' : 'Build the pipeline, then add books.'}</p>
+		{#if data.canManageSeries}<a class="btn btn-primary" href="/s/{data.series.id}/settings#pipeline">Open settings</a>{/if}
+	</div>
+{:else}
 <div class="matrix-outer">
 	<table class="matrix">
 		<thead>
@@ -169,6 +175,7 @@
 		</tbody>
 	</table>
 </div>
+{/if}
 
 <style>
 	/* ── Header strip ────────────────────────────────────────────────────────── */
@@ -196,6 +203,11 @@
 	.badge-risk { background: var(--tertiary-subtle); color: var(--tertiary-foreground); }
 
 	/* ── Matrix wrapper ──────────────────────────────────────────────────────── */
+	.matrix-empty {
+		margin: var(--sp-6); padding: var(--sp-8); text-align: center; background: var(--muted); border-radius: var(--radius);
+		display: flex; flex-direction: column; align-items: center; gap: var(--sp-3); color: var(--muted-foreground);
+	}
+	.matrix-empty strong { color: var(--foreground); }
 	.matrix-outer {
 		overflow-x: auto;
 		overflow-y: auto;

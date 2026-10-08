@@ -38,6 +38,20 @@
 	let printFlash = $state<Flash>(null);
 	let busy = $state(false);
 
+	// Save the pipeline as a template (spec: POST /api/series/:id/template).
+	let tplName = $state('');
+	let tplFlash = $state<{ ok: boolean; text: string } | null>(null);
+	async function saveAsTemplate(e: SubmitEvent) {
+		e.preventDefault();
+		busy = true;
+		const res = await api<{ name: string; stages: number }>('POST', `/api/series/${data.series.id}/template`, { name: tplName });
+		busy = false;
+		tplFlash = res.ok
+			? { ok: true, text: `Saved ${res.data.name} (${res.data.stages} stages). ${data.isAdmin ? 'Find it under Templates.' : 'An admin can start new series from it.'}` }
+			: { ok: false, text: res.message };
+		if (res.ok) tplName = '';
+	}
+
 	const generalDirty = $derived(
 		general.name !== data.series.name ||
 			general.status !== data.series.status ||
@@ -1424,7 +1438,14 @@
 				{/if}
 			</div>
 		{/if}
-		
+
+		<h3>Save as a template</h3>
+		<form class="tpl-save" onsubmit={saveAsTemplate}>
+			<p class="hint">Copies the tracks, stages, dependency pattern, team labels and settings (not books, windows or dates), so a new series can start from them.</p>
+			<label class="field"><span>Template name</span><input class="input" bind:value={tplName} required maxlength="80" placeholder="Learner book series" /></label>
+			<button class="btn btn-ghost btn-lg" disabled={busy || !tplName.trim()}>Save template</button>
+			{#if tplFlash}<p class="notice" class:notice--ok={tplFlash.ok} class:notice--error={!tplFlash.ok} role="status">{tplFlash.text}</p>{/if}
+		</form>
 	</section>
 
 	<!-- Team ────────────────────────────────────────────────────────────── -->
@@ -1607,6 +1628,8 @@
 	.impact-list { margin: 0; padding-left: var(--sp-5); display: flex; flex-direction: column; gap: 2px; }
 	.impact-list .warn { color: var(--danger); }
 
+	.tpl-save { display: grid; grid-template-columns: 1fr auto; gap: var(--sp-2) var(--sp-3); align-items: end; }
+	.tpl-save .hint, .tpl-save .notice { grid-column: 1 / -1; margin: 0; }
 	.form-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--sp-3); }
 	.form-foot .notice { margin: 0 auto 0 0; }
 

@@ -30,7 +30,8 @@ export const series = sqliteTable('series', {
 	defaultCopies: integer('default_copies').notNull().default(20),
 	legalDepositCopies: integer('legal_deposit_copies').notNull().default(0),
 	printBufferDays: integer('print_buffer_days').notNull().default(1),
-	windowOverflowDays: integer('window_overflow_days').notNull().default(0)
+	windowOverflowDays: integer('window_overflow_days').notNull().default(0),
+	teamLabels: text('team_labels') // JSON array of suggested labels, e.g. copied from a template
 });
 
 export const tracks = sqliteTable(

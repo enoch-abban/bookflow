@@ -6,6 +6,7 @@ import { bookStageSkips, books, invites, people, series, seriesMembers, stages, 
 import { requireCoord } from '#lib/server/api-auth.ts';
 import { inviteState } from '#lib/server/invites.ts';
 import { refreshHolidays } from '#lib/server/calendar-db.ts';
+import { seriesLabels } from '#lib/server/templates.ts';
 
 export const load: PageServerLoad = async ({ params, locals }) => {
 	const me = await requireCoord(locals, params.series);
@@ -107,7 +108,8 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		}))
 	};
 
-	const teamLabels = [...new Set(members.map((m) => m.teamLabel).filter((l): l is string => !!l))].sort();
+	// Suggestions: the labels in use plus the series' own list (copied from its template).
+	const teamLabels = [...new Set([...members.map((m) => m.teamLabel), ...seriesLabels(ser.teamLabels)].filter((l): l is string => !!l))].sort();
 
 	return {
 		series: ser,

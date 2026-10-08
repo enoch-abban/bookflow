@@ -31,7 +31,10 @@ import {
 	baselines,
 	baselineTasks,
 	activityLog,
+	templates,
 } from '../schema.ts';
+import { eq } from 'drizzle-orm';
+import { definitionFrom } from '../../../templates/definition.ts';
 import { checkExplicitMove, isWorkingDay, type WindowRules } from '../../scheduler.ts';
 import { bookLinks } from '../../../schedule/pattern.ts';
 
@@ -418,6 +421,24 @@ async function main() {
 		afterJson: JSON.stringify({ name: 'eSTEAM L2', startDate: '2026-10-01' }),
 		createdAt: NOW,
 	});
+
+	// ── First template ─────────────────────────────────────────────────────────
+	// The series' pipeline saved as "Learner book series", so later runs start from it.
+
+	const definition = definitionFrom({
+		tracks: await db.select().from(tracks).where(eq(tracks.seriesId, SERIES)),
+		stages: await db.select().from(stages).where(eq(stages.seriesId, SERIES)),
+		stageTracks: await db.select().from(stageTracks),
+		links: await db.select().from(stageLinks),
+		teamLabels: (await db.select({ l: seriesMembers.teamLabel }).from(seriesMembers).where(eq(seriesMembers.seriesId, SERIES))).map((r) => r.l ?? ''),
+		settings: (await db.select().from(seriesTable).where(eq(seriesTable.id, SERIES)))[0],
+	});
+	const TEMPLATE = ulid();
+	await db.insert(templates).values({
+		id: TEMPLATE, name: 'Learner book series', description: 'Saved from eSTEAM L2: image and content tracks through review, layout, printing and binding.',
+		definitionJson: JSON.stringify(definition), createdBy: P.et1, createdAt: NOW,
+	});
+	await db.update(seriesTable).set({ templateId: TEMPLATE, teamLabels: JSON.stringify(definition.teamLabels) }).where(eq(seriesTable.id, SERIES));
 
 	console.log(`Done. Series: ${SERIES} | Tasks: ${taskRows.length} | Dependencies: ${depRows.length} | Skips: ${skipRows.length} | Windows: ${WINDOWS.length}`);
 	if (problems.length) {
