@@ -29,12 +29,13 @@
 		goto(who ? `?who=${encodeURIComponent(who)}` : '?');
 	}
 
-	async function undo(item: (typeof data.items)[number]) {
+	async function step(item: (typeof data.items)[number], which: 'undo' | 'redo') {
 		busy = item.key;
 		notice = null;
-		const res = await api('POST', '/api/undo', { batchId: item.batchId, seriesId: data.series.id });
+		const res = await api('POST', `/api/${which}`, { batchId: item.batchId, seriesId: data.series.id });
 		busy = null;
-		notice = res.ok ? { kind: 'ok', text: `Undone: ${item.headline}` } : { kind: 'error', text: res.message };
+		const what = which === 'undo' ? item.headline : item.headline.replace(/^Undid: /, '');
+		notice = res.ok ? { kind: 'ok', text: `${which === 'undo' ? 'Undone' : 'Redone'}: ${what}` } : { kind: 'error', text: res.message };
 		await invalidateAll();
 	}
 </script>
@@ -44,7 +45,7 @@
 		<div>
 			<h1>Activity</h1>
 			<p class="sub">
-				Every change on {data.series.name}, newest first. You can undo your own last {data.limit} schedule and pipeline changes{data.me.isAdmin ? '; as an admin you can undo anyone’s' : ''}.
+				Every change on {data.series.name}, newest first. You can undo your own last {data.limit} schedule and pipeline changes{data.me.isAdmin ? '; as an admin you can undo anyone’s' : ''}, and redo what you undid.
 			</p>
 		</div>
 		<label class="field who">
@@ -77,7 +78,7 @@
 									<span>{it.actor}</span>
 									<span>{time(it.at)}</span>
 									{#if it.reversedBy}
-										<span class="undone">Undone by {it.reversedBy.actor}, {when(it.reversedBy.at)}</span>
+										<span class="undone">{it.reversedBy.action === 'redo' ? 'Redone' : 'Undone'} by {it.reversedBy.actor}, {when(it.reversedBy.at)}</span>
 									{/if}
 								</div>
 								{#if it.count > 1}
@@ -92,7 +93,9 @@
 							</div>
 							<div class="item-actions">
 								{#if it.canUndo}
-									<button class="btn btn-ghost" onclick={() => undo(it)} disabled={busy !== null}>{busy === it.key ? 'Undoing…' : 'Undo'}</button>
+									<button class="btn btn-ghost" onclick={() => step(it, 'undo')} disabled={busy !== null}>{busy === it.key ? 'Undoing…' : 'Undo'}</button>
+								{:else if it.canRedo}
+									<button class="btn btn-ghost" onclick={() => step(it, 'redo')} disabled={busy !== null}>{busy === it.key ? 'Redoing…' : 'Redo'}</button>
 								{/if}
 							</div>
 						</li>

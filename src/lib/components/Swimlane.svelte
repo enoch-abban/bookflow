@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import { invalidateAll } from '$app/navigation';
 	import { latestEnd, sortWindows, windowAt } from '#lib/schedule/windows.ts';
 	import { setHolidays } from '#lib/schedule/calendar.ts';
 	import { criticalPath } from '#lib/schedule/critical.ts';
@@ -140,9 +141,59 @@
 	}
 	function onKey(e: KeyboardEvent) {
 		const el = e.target as HTMLElement | null;
-		if (e.key.toLowerCase() !== 'c' || e.ctrlKey || e.metaKey || e.altKey) return;
 		if (el && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName))) return;
+		const key = e.key.toLowerCase();
+		// Ctrl or Cmd + Z undoes, with Shift redoes (Ctrl + Y too) — spec: Undo and redo.
+		if ((e.ctrlKey || e.metaKey) && !e.altKey && (key === 'z' || (key === 'y' && !e.shiftKey))) {
+			e.preventDefault();
+			step(key === 'y' || e.shiftKey ? 'redo' : 'undo');
+			return;
+		}
+		if (key !== 'c' || e.ctrlKey || e.metaKey || e.altKey) return;
 		toggleCritPath();
+	}
+
+	// ── Undo and redo ─────────────────────────────────────────────────────────
+	// The server keeps the stack: each person's last 50 changes on the series, newest first.
+
+	type StackItem = { batchId: string; label: string } | null;
+	let stack = $state<{ undo: StackItem; redo: StackItem }>({ undo: null, redo: null });
+	let stepping = $state(false);
+
+	async function refreshStack() {
+		try {
+			const res = await fetch(`/api/series/${series.id}/history`);
+			if (res.ok) stack = await res.json();
+		} catch { /* offline; buttons keep their last state */ }
+	}
+	$effect(() => {
+		void series.id;
+		untrack(refreshStack);
+	});
+
+	async function step(which: 'undo' | 'redo') {
+		const item = stack[which];
+		if (!item || stepping || drag || resizing) return;
+		stepping = true;
+		try {
+			const res = await fetch(`/api/${which}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ batchId: item.batchId, seriesId: series.id })
+			});
+			const body = await res.json().catch(() => ({}));
+			if (res.ok) {
+				showNotice(`${which === 'undo' ? 'Undone' : 'Redone'}: ${item.label}`, 'ok');
+				await invalidateAll();
+			} else {
+				showNotice(body.message ?? `That could not be ${which === 'undo' ? 'undone' : 'redone'}.`);
+			}
+		} catch {
+			showNotice('Could not reach the server. Nothing was changed.');
+		} finally {
+			stepping = false;
+			await refreshStack();
+		}
 	}
 	// Editable local copy; synced from prop via effect declared after drag/resize state
 	let localTasks = $state<Task[]>([]);
@@ -415,9 +466,11 @@
 
 	// Message from the server when a save is refused (window rule, stale version).
 	let notice = $state<string | null>(null);
+	let noticeKind = $state<'error' | 'ok'>('error');
 	let noticeTimer: ReturnType<typeof setTimeout> | undefined;
-	function showNotice(text: string) {
+	function showNotice(text: string, kind: 'error' | 'ok' = 'error') {
 		notice = text;
+		noticeKind = kind;
 		clearTimeout(noticeTimer);
 		noticeTimer = setTimeout(() => (notice = null), 5000);
 	}
@@ -491,6 +544,7 @@
 					const sv = changed.find((c) => c.id === t.id);
 					return sv ? { ...t, ...sv } : t;
 				});
+				refreshStack();
 			} else {
 				// Window violation (422) or version conflict (409): revert and say why
 				revert(taskId, orig);
@@ -673,6 +727,18 @@
 	<div class="sl-toolbar">
 		<span class="sl-series-name">{series.name}</span>
 		<div class="sl-toolbar-actions">
+			<div class="btn-seg" role="group" aria-label="Undo and redo">
+				<button
+					onclick={() => step('undo')}
+					disabled={!stack.undo || stepping}
+					title={stack.undo ? `Undo: ${stack.undo.label} (Ctrl+Z)` : 'Nothing to undo'}
+				>Undo</button>
+				<button
+					onclick={() => step('redo')}
+					disabled={!stack.redo || stepping}
+					title={stack.redo ? `Redo: ${stack.redo.label} (Ctrl+Shift+Z)` : 'Nothing to redo'}
+				>Redo</button>
+			</div>
 			<div class="btn-seg">
 				<button class:on={laneMode === 'book'} onclick={() => (laneMode = 'book')}>By book</button>
 				<button class:on={laneMode === 'person'} onclick={() => (laneMode = 'person')}
@@ -695,7 +761,7 @@
 	</div>
 
 	{#if notice}
-		<div class="sl-notice" role="alert">
+		<div class="sl-notice" class:ok={noticeKind === 'ok'} role={noticeKind === 'ok' ? 'status' : 'alert'}>
 			<span>{notice}</span>
 			<button onclick={() => (notice = null)} aria-label="Dismiss">×</button>
 		</div>
@@ -961,6 +1027,9 @@
 		background: var(--primary-subtle);
 		color: var(--primary);
 	}
+	.btn-seg button:disabled { opacity: 0.45; cursor: default; }
+	.btn-seg button:not(:disabled):hover { color: var(--foreground); background: var(--muted); }
+	.btn-seg button + button { border-left: 1px solid var(--border); }
 	.btn-toggle {
 		border: 1px solid var(--border);
 		border-radius: 6px;
@@ -1261,6 +1330,10 @@
 		background: var(--danger-subtle);
 		color: var(--danger);
 		justify-content: space-between;
+	}
+	.sl-notice.ok {
+		background: var(--success-subtle);
+		color: var(--success);
 	}
 	.sl-notice button {
 		border: none;

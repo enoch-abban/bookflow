@@ -5,8 +5,9 @@ import { db } from '#lib/server/db/index.ts';
 import { activityLog, baselineTasks, books, bookStageSkips, dependencies, holidays, printRecords, series, stageLinks, stageTracks, stages, taskAssignees, taskComments, tasks, tracks, windows } from '#lib/server/db/schema.ts';
 import { and, asc, eq, inArray, or } from 'drizzle-orm';
 import { parseBody, resolvePerson } from '#lib/server/api-auth.ts';
-import { recentBatches, reversals, taskNames, undoRefusal } from '#lib/server/history.ts';
+import { recentBatches, reversals, stepConflict, taskNames, undoRefusal } from '#lib/server/history.ts';
 import { batchKind } from '#lib/activity/describe.ts';
+import { reverseStep, taskBundle } from '#lib/server/reapply.ts';
 
 type Body = { batchId: string; seriesId: string };
 
@@ -44,6 +45,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const recent = isAdmin || !batchSeriesId ? [] : await recentBatches(personId, batchSeriesId);
 	const refusal = undoRefusal({ batchId: body.batchId, actorId, kind, reversed }, { personId, isAdmin }, recent);
 	if (refusal) throw error(reversed ? 409 : 403, refusal);
+
+	// Undoing a redo reverses its snapshots, as redo reversed the undo before it.
+	if (kind === 'redo') {
+		const res = await reverseStep({ sourceBatchId: body.batchId, entries, actorId: personId, action: 'undo' });
+		if (!res.ok) return stepConflict(batchSeriesId, res.taskIds, res.other);
+		return json({ restored: res.restored, undoBatchId: res.batchId });
+	}
 
 	// A task can appear more than once in a batch (e.g. an overflow switch, then its refit):
 	// each field is restored from the earliest entry that recorded it, and the task must
@@ -289,12 +297,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			await logRow('dependency', id, dep, null);
 		}
 		for (const entry of rowCreates.filter(e => e.entity === 'task')) {
-			const task = await tx.select().from(tasks).where(eq(tasks.id, entry.entityId)).then(r => r[0]);
-			if (!task) continue;
+			const bundle = await taskBundle(tx, entry.entityId);
+			if (!bundle) continue;
+			const { task } = bundle;
 			await tx.delete(dependencies).where(or(eq(dependencies.predecessorId, task.id), eq(dependencies.successorId, task.id)));
 			await tx.delete(taskAssignees).where(eq(taskAssignees.taskId, task.id));
 			await tx.delete(tasks).where(eq(tasks.id, task.id));
-			await logRow('task', task.id, task, null);
+			await logRow('task', task.id, bundle, null);
 		}
 		for (const entry of rowCreates.filter(e => e.entity === 'stage_link')) {
 			const link = JSON.parse(entry.afterJson!);
@@ -320,20 +329,28 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			if (!current) continue;
 			const fields = Object.fromEntries(Object.entries(before).filter(([k]) => k !== 'version'));
 			await tx.update(printRecords).set({ ...fields, version: current.version + 1, updatedAt: now }).where(eq(printRecords.bookId, entry.entityId));
-			await tx.insert(activityLog).values({ id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'print_record', entityId: entry.entityId, action: 'undo', beforeJson: entry.afterJson, afterJson: JSON.stringify(fields), batchId: undoBatch, createdAt: now });
+			await tx.insert(activityLog).values({ id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'print_record', entityId: entry.entityId, action: 'undo', beforeJson: entry.afterJson, afterJson: JSON.stringify({ ...fields, version: current.version + 1 }), batchId: undoBatch, createdAt: now });
 		}
 
 		// Stages and tracks the batch added go once their tasks have; deleted tracks come back.
+		// Each removal is logged with everything removed, so a redo can put it all back.
 		for (const entry of stageCreates) {
+			const stage = await tx.select().from(stages).where(eq(stages.id, entry.entityId)).then(r => r[0]);
+			const bundle = {
+				stage, stageTracks: await tx.select().from(stageTracks).where(eq(stageTracks.stageId, entry.entityId)),
+				skips: await tx.select().from(bookStageSkips).where(eq(bookStageSkips.stageId, entry.entityId)),
+			};
 			await tx.delete(bookStageSkips).where(eq(bookStageSkips.stageId, entry.entityId));
 			await tx.delete(stageTracks).where(eq(stageTracks.stageId, entry.entityId));
 			await tx.delete(stages).where(eq(stages.id, entry.entityId));
-			await tx.insert(activityLog).values({ id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'stage', entityId: entry.entityId, action: 'undo', beforeJson: entry.afterJson, batchId: undoBatch, createdAt: now });
+			await tx.insert(activityLog).values({ id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'stage', entityId: entry.entityId, action: 'undo', beforeJson: stage ? JSON.stringify(bundle) : entry.afterJson, batchId: undoBatch, createdAt: now });
 		}
 		for (const entry of trackCreates) {
+			const track = await tx.select().from(tracks).where(eq(tracks.id, entry.entityId)).then(r => r[0]);
+			const bundle = { track, stageTracks: await tx.select().from(stageTracks).where(eq(stageTracks.trackId, entry.entityId)) };
 			await tx.delete(stageTracks).where(eq(stageTracks.trackId, entry.entityId));
 			await tx.delete(tracks).where(eq(tracks.id, entry.entityId));
-			await tx.insert(activityLog).values({ id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'track', entityId: entry.entityId, action: 'undo', beforeJson: entry.afterJson, batchId: undoBatch, createdAt: now });
+			await tx.insert(activityLog).values({ id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'track', entityId: entry.entityId, action: 'undo', beforeJson: track ? JSON.stringify(bundle) : entry.afterJson, batchId: undoBatch, createdAt: now });
 		}
 		for (const entry of trackDeletes) {
 			const before = JSON.parse(entry.beforeJson!);
@@ -344,6 +361,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 		// Books the batch added go, with everything created for them.
 		for (const [bookId, ids] of createdBookTasks) {
+			const book = await tx.select().from(books).where(eq(books.id, bookId)).then(r => r[0]);
+			const taskBundles = [];
+			for (const id of ids) taskBundles.push(await taskBundle(tx, id));
+			const bundle = {
+				book, tasks: taskBundles.filter(Boolean),
+				skips: await tx.select().from(bookStageSkips).where(eq(bookStageSkips.bookId, bookId)),
+				printRecord: await tx.select().from(printRecords).where(eq(printRecords.bookId, bookId)).then(r => r[0] ?? null),
+			};
 			if (ids.length) {
 				await tx.delete(dependencies).where(or(inArray(dependencies.predecessorId, ids), inArray(dependencies.successorId, ids)));
 				await tx.delete(taskAssignees).where(inArray(taskAssignees.taskId, ids));
@@ -354,7 +379,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			await tx.delete(books).where(eq(books.id, bookId));
 			await tx.insert(activityLog).values({
 				id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'book', entityId: bookId, action: 'undo',
-				beforeJson: JSON.stringify({ tasks: ids.length }), batchId: undoBatch, createdAt: now,
+				beforeJson: JSON.stringify(bundle), batchId: undoBatch, createdAt: now,
 			});
 		}
 

@@ -3,6 +3,7 @@
  * the names its lines need, and who may undo which batch. A user can undo their own last 50
  * changes on a series; an admin any change. A batch already reversed cannot be undone again.
  */
+import { json } from '@sveltejs/kit';
 import { and, desc, eq, inArray, isNotNull, lt, ne, sql } from 'drizzle-orm';
 import { db } from '#lib/server/db/index.ts';
 import { activityLog, books, people, stages, tasks, tracks, windows } from '#lib/server/db/schema.ts';
@@ -135,9 +136,10 @@ export async function feed(opts: { seriesId: string; viewer: { personId: string;
 	}
 	for (const list of byKey.values()) list.sort((a, b) => a.id.localeCompare(b.id));
 
-	// Undo and redo items are headed by the change they reversed.
-	const revertedIds = [...new Set([...byKey.values()].map((l) => l[0].revertsBatchId).filter((x): x is string => !!x))];
-	const revertedRows = revertedIds.length ? await db.select().from(activityLog).where(inArray(activityLog.batchId, revertedIds)) : [];
+	// Undo and redo items are headed by the original change behind them.
+	const origins = new Map<string, Row[]>();
+	for (const [k, l] of byKey) if (l[0].revertsBatchId) origins.set(k, await originalChange(l[0].revertsBatchId));
+	const revertedRows = [...origins.values()].flat();
 
 	const allEntries = [...byKey.values()].flat().concat(revertedRows).map(toEntry);
 	const names = await namesFor(opts.seriesId, allEntries);
@@ -163,18 +165,35 @@ export async function feed(opts: { seriesId: string; viewer: { personId: string;
 			actorId: first.actorId,
 			actor: actorName(first.actorId),
 			at: list.at(-1)!.createdAt,
-			headline: first.revertsBatchId && kind !== 'change'
-				? `${kind === 'undo' ? 'Undid' : 'Redid'}: ${headline(revertedRows.filter((r) => r.batchId === first.revertsBatchId).sort((a, b) => a.id.localeCompare(b.id)).map(toEntry), names) || 'a change'}`
+			headline: origins.has(k) && kind !== 'change'
+				? `${kind === 'undo' ? 'Undid' : 'Redid'}: ${headline(origins.get(k)!.map(toEntry), names) || 'a change'}`
 				: headline(entries, names),
 			lines: entries.slice(0, 60).map((e) => describe(e, names)),
 			count: entries.length,
 			reverts: first.revertsBatchId,
 			reversedBy: rev ? { batchId: rev.batchId, actor: actorName(rev.actorId), at: rev.at, action: rev.action } : null,
 			canUndo: isBatch && refusal === null,
+			canRedo: isBatch && redoRefusal({ actorId: first.actorId, kind, reversed: !!rev }, opts.viewer) === null,
 			undoRefusal: isBatch ? refusal : null,
 		};
 	});
 	return { items, cursor: more ? cursor : null };
+}
+
+/**
+ * The original change behind an undo or redo: undo → change, redo → undo → change, and so on.
+ * Returns its entries, oldest first, so a line can name what was undone or redone.
+ */
+export async function originalChange(batchId: string): Promise<Row[]> {
+	let id: string | null = batchId;
+	for (let hops = 0; id && hops < 200; hops++) {
+		const rows: Row[] = await db.select().from(activityLog).where(eq(activityLog.batchId, id));
+		if (!rows.length) return [];
+		const kind = batchKind(rows.map(toEntry));
+		if (kind === 'change' || !rows[0].revertsBatchId) return rows.sort((a, b) => a.id.localeCompare(b.id));
+		id = rows[0].revertsBatchId;
+	}
+	return [];
 }
 
 /** "G3 Layout, G4 Layout" for the tasks an undo conflict names. */
@@ -191,3 +210,53 @@ export async function actorsOf(seriesId: string) {
 	return rows.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+
+/** A 409 naming what changed since, shared by undo and redo. */
+export async function stepConflict(seriesId: string | null, taskIds: string[], other: string[]) {
+	const named = await taskNames(seriesId, [...new Set(taskIds)]);
+	const what = [
+		named.length && `${named.slice(0, 5).join(', ')}${named.length > 5 ? ` and ${named.length - 5} more` : ''}`,
+		...other,
+	].filter(Boolean).join('; ');
+	return json({ error: 'conflict', taskIds, other, message: `Can't do that: ${what} changed since, and it would overwrite that later edit.` }, { status: 409 });
+}
+
+/** Why the viewer cannot redo this batch, or null. Only the person who undid it can redo it. */
+export function redoRefusal(batch: { actorId: string | null; kind: ReturnType<typeof batchKind>; reversed: boolean }, viewer: { personId: string }): string | null {
+	if (batch.kind !== 'undo') return 'Only an undo can be redone.';
+	if (batch.reversed) return 'This has already been redone.';
+	if (batch.actorId !== viewer.personId) return 'Only the person who undid this can redo it.';
+	return null;
+}
+
+/**
+ * What the viewer's Undo and Redo buttons would do on this series: undo their newest change
+ * (or redo) not yet undone, within their last 50; redo their newest undo not yet redone,
+ * unless they have made a fresh change since, which clears the redo stack as usual.
+ */
+export async function stackState(personId: string, seriesId: string) {
+	const rows = await db.select({ batchId: activityLog.batchId, last: sql<string>`max(${activityLog.id})`, kinds: sql<string>`group_concat(distinct ${activityLog.action})` })
+		.from(activityLog)
+		.where(and(eq(activityLog.actorId, personId), eq(activityLog.seriesId, seriesId), isNotNull(activityLog.batchId)))
+		.groupBy(activityLog.batchId)
+		.orderBy(desc(sql`max(${activityLog.id})`))
+		.limit(UNDO_LIMIT * 3);
+	const kindOf = (k: string) => (k === 'undo' ? 'undo' : k === 'redo' ? 'redo' : 'change');
+	const batches = rows.map((r) => ({ batchId: r.batchId!, last: r.last, kind: kindOf(r.kinds) }));
+	const reversed = await reversals(batches.map((b) => b.batchId));
+
+	const undoable = batches.filter((b) => b.kind !== 'undo').slice(0, UNDO_LIMIT);
+	const undo = undoable.find((b) => !reversed.has(b.batchId)) ?? null;
+	const lastChange = batches.find((b) => b.kind === 'change');
+	const redo = batches.find((b) => b.kind === 'undo' && !reversed.has(b.batchId) && (!lastChange || b.last > lastChange.last)) ?? null;
+
+	// Both buttons name the original change they would take away or put back.
+	const label = async (batchId: string) => {
+		const list = (await originalChange(batchId)).map(toEntry);
+		return headline(list, await namesFor(seriesId, list)) || 'a change';
+	};
+	return {
+		undo: undo ? { batchId: undo.batchId, label: await label(undo.batchId) } : null,
+		redo: redo ? { batchId: redo.batchId, label: await label(redo.batchId) } : null,
+	};
+}
