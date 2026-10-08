@@ -3,6 +3,7 @@
 	import { enhance } from '$app/forms';
 
 	let { data, form }: PageProps = $props();
+	let returning = $state<string | null>(null);
 
 	function fmtDate(d: string): string {
 		const [yr, mm, day] = d.split('-');
@@ -27,6 +28,47 @@
 	</header>
 
 	{#if form?.message}<p class="notice notice--error" role="alert">{form.message}</p>{/if}
+
+	{#if data.reviews.length}
+		<section class="task-group">
+			<h2 class="group-heading">Waiting for my review <span class="group-count">{data.reviews.length}</span></h2>
+			<div class="task-list">
+				{#each data.reviews as r (r.taskId)}
+					<div class="task-row review-row" data-status="in_review">
+						<div class="task-info">
+							<div class="task-title">
+								<span class="task-book">{r.bookCode}</span>
+								<span class="task-stage">{r.stageName}</span>
+								<span class="iter-badge">round {r.iteration}</span>
+							</div>
+							<div class="task-meta">
+								<a href="/s/{r.seriesId}/books/{encodeURIComponent(r.bookCode)}" class="series-link">{r.seriesName}</a>
+								<span class="task-due">Planned to end {fmtDate(r.endDate)}</span>
+								{#if r.feedbackUrl}<a href={r.feedbackUrl} target="_blank" rel="noopener" class="series-link">Feedback file</a>{/if}
+							</div>
+						</div>
+						<div class="task-actions review-actions">
+							<form method="POST" action="?/approve" use:enhance>
+								<input type="hidden" name="taskId" value={r.taskId} />
+								<button type="submit" class="btn btn-primary">Approve</button>
+							</form>
+							{#if returning === r.taskId}
+								<form method="POST" action="?/return" class="return-form" use:enhance={() => async ({ update }) => { await update(); returning = null; }}>
+									<input type="hidden" name="taskId" value={r.taskId} />
+									<!-- svelte-ignore a11y_autofocus -->
+									<input class="input" name="summary" maxlength="1000" required autofocus placeholder="What needs changing (detail stays in the Drive file)" />
+									<button type="submit" class="btn btn-secondary">Return</button>
+									<button type="button" class="btn btn-ghost" onclick={() => (returning = null)}>Cancel</button>
+								</form>
+							{:else}
+								<button class="btn btn-ghost" onclick={() => (returning = r.taskId)}>Return with changes</button>
+							{/if}
+						</div>
+					</div>
+				{/each}
+			</div>
+		</section>
+	{/if}
 
 	{#if !data.person}
 		<div class="empty-state">
@@ -66,23 +108,23 @@
 										<button type="submit" class="btn btn-primary">Start</button>
 									</form>
 								{:else if row.status === 'in_progress'}
-									<form method="POST" action="?/submit" use:enhance>
-										<input type="hidden" name="taskId" value={row.taskId} />
-										<button type="submit" class="btn btn-secondary">Submit for review</button>
-									</form>
-									<form method="POST" action="?/done" use:enhance>
-										<input type="hidden" name="taskId" value={row.taskId} />
-										<button type="submit" class="btn btn-ghost">Done</button>
-									</form>
+									{#if row.reviewed}
+										<form method="POST" action="?/submit" use:enhance>
+											<input type="hidden" name="taskId" value={row.taskId} />
+											<button type="submit" class="btn btn-secondary">Submit for review</button>
+										</form>
+									{:else}
+										<form method="POST" action="?/done" use:enhance>
+											<input type="hidden" name="taskId" value={row.taskId} />
+											<button type="submit" class="btn btn-primary">Done</button>
+										</form>
+									{/if}
 								{:else if row.status === 'in_review'}
-									<form method="POST" action="?/done" use:enhance>
-										<input type="hidden" name="taskId" value={row.taskId} />
-										<button type="submit" class="btn btn-ghost">Done</button>
-									</form>
+									<span class="waiting">Waiting on {row.waitingOn.length ? row.waitingOn.join(', ') : 'a coordinator'}</span>
 								{:else if row.status === 'returned'}
 									<form method="POST" action="?/resume" use:enhance>
 										<input type="hidden" name="taskId" value={row.taskId} />
-										<button type="submit" class="btn btn-primary">Resume</button>
+										<button type="submit" class="btn btn-primary">Resume corrections</button>
 									</form>
 								{/if}
 							</div>
@@ -168,6 +210,11 @@
 	}
 
 	.task-actions { display: flex; gap: var(--sp-2); flex-shrink: 0; }
+	.review-actions { flex-wrap: wrap; justify-content: flex-end; max-width: 60%; }
+	.return-form { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+	.return-form .input { min-width: 240px; }
+	.review-row { border-left: 3px solid var(--secondary); }
+	.waiting { font-size: 12px; color: var(--muted-foreground); }
 
 	/* Buttons */
 	.btn {

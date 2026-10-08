@@ -147,6 +147,9 @@
 												<span class="chip-avatar">{initials(lead.displayName)}</span>
 											{/if}
 											<span class="chip-date">{fmtDate(task.endDate)}</span>
+											{#if data.reviewsDone[task.id] || task.status === 'in_review'}
+												<span class="chip-reviews" title="Reviews done{task.status === 'in_review' ? ', one pending' : ''}">✓{data.reviewsDone[task.id] ?? 0}{#if task.status === 'in_review'} · ⏳{/if}</span>
+											{/if}
 											{#if (stage.key === 'printing' || stage.key === 'binding') && data.copies[book.id]}
 												{@const c = data.copies[book.id]}
 												<span class="chip-copies" title="Copies {stage.key === 'printing' ? 'printed' : 'bound'} against the print run">{stage.key === 'printing' ? c.printed : c.bound} of {c.run}</span>

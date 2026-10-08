@@ -10,6 +10,7 @@ import { db } from '#lib/server/db/index.ts';
 import { activityLog, books, seriesMembers, stages, taskAssignees, tasks } from '#lib/server/db/schema.ts';
 import { isAllowedTransition } from './scheduler.ts';
 import { resolvePerson } from './api-auth.ts';
+import { reviewGuard } from './reviews.ts';
 
 type TaskRow = typeof tasks.$inferSelect;
 
@@ -26,9 +27,11 @@ export async function statusGuard(task: TaskRow, to: string) {
 		const book = await db.select({ isbn: books.isbn }).from(books).where(eq(books.id, task.bookId)).then((r) => r[0]);
 		if (!book?.isbn) throw error(422, 'Record the ISBN on the book page before marking ISBN issued as Done.');
 	}
+	// Review loop: submit only when a review stage follows; in-review tasks move only by review.
+	await reviewGuard(task, to);
 }
 
-/** Field changes a status move implies (blocked memory, completion time, review rounds). */
+/** Field changes a status move implies (blocked memory, completion time). Review rounds are counted on Return. */
 export function statusUpdates(task: TaskRow, to: string, now: string): Partial<TaskRow> {
 	const updates: Partial<TaskRow> = { status: to as TaskRow['status'] };
 	if (to === 'blocked') updates.statusBeforeBlock = task.status;
@@ -37,7 +40,6 @@ export function statusUpdates(task: TaskRow, to: string, now: string): Partial<T
 		updates.blockedReason = null;
 	}
 	if (to === 'done') updates.completedAt = now;
-	if (to === 'in_progress' && task.status === 'returned') updates.iteration = (task.iteration ?? 1) + 1;
 	return updates;
 }
 

@@ -191,3 +191,11 @@ export const holidaySchema = z.object({
 	label: z.string().trim().min(1, 'Name the holiday.').max(80),
 	preview: z.boolean().optional()
 });
+
+export const reviewSchema = z.object({
+	outcome: z.enum(['approved', 'changes_requested']),
+	summary: z.string().trim().max(1000).nullable().optional(),
+	version: z.number().int()
+});
+
+export const commentSchema = z.object({ body: z.string().trim().min(1, 'Write a comment first.').max(2000) });

@@ -10,6 +10,7 @@ import {
 	taskAssignees,
 	people,
 	printRecords,
+	reviewCycles,
 } from '#lib/server/db/schema.ts';
 import { and, eq, inArray, asc, isNull } from 'drizzle-orm';
 
@@ -55,6 +56,11 @@ export const load: PageServerLoad = async ({ params }) => {
 	const records = bookIds.length ? await db.select().from(printRecords).where(inArray(printRecords.bookId, bookIds)) : [];
 	const copies = Object.fromEntries(records.map((r) => [r.bookId, { printed: r.copiesPrinted, bound: r.copiesBound, run: r.copiesPlanned + r.depositCopies }]));
 
+	// Review badges: reviews recorded per task (pending = the task is In review).
+	const reviewRows = taskIds.length ? await db.select({ taskId: reviewCycles.taskId }).from(reviewCycles).where(inArray(reviewCycles.taskId, taskIds)) : [];
+	const reviewsDone: Record<string, number> = {};
+	for (const r of reviewRows) reviewsDone[r.taskId] = (reviewsDone[r.taskId] ?? 0) + 1;
+
 	// Build stats
 	const today = new Date().toISOString().slice(0, 10);
 	let late = 0;
@@ -85,6 +91,7 @@ export const load: PageServerLoad = async ({ params }) => {
 		assignees: assigneesData,
 		people: peopleData,
 		copies,
+		reviewsDone,
 		stats: { late, atRisk, projectedFinish, today },
 	};
 };

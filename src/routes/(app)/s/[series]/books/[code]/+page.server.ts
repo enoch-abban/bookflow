@@ -11,6 +11,7 @@ import { workingDaysBetween } from '#lib/schedule/calendar.ts';
 import { recordAccess } from '#lib/server/print-records.ts';
 import { refreshHolidays } from '#lib/server/calendar-db.ts';
 import { criticalPath } from '#lib/schedule/critical.ts';
+import { reviewersOf } from '#lib/server/reviews.ts';
 
 // Book detail (spec: Book detail): ISBN and edition, the pipeline as a stepper, every task
 // with dates and variance from the latest baseline, review history, comments, and the
@@ -81,6 +82,11 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 			return { id: s.id, name: s.name, category: s.category, state: skipped.has(s.id) ? 'skipped' : t ? t.status : 'missing' };
 		});
 
+	// Who each task in review is waiting on: the next review stage's assignees.
+	const waitingOn: Record<string, string[]> = {};
+	for (const { t } of taskRows.filter((r) => r.t.status === 'in_review'))
+		waitingOn[t.id] = (await reviewersOf(t)).people.map((p) => p.name);
+
 	const binding = taskList.find((t) => t.stageKey === 'binding');
 
 	// This book's critical path: tasks that cannot slip without delaying its binding. Other
@@ -115,6 +121,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		})),
 		comments: comments.map((c) => ({ id: c.c.id, stage: stageOf.get(c.c.taskId)?.name ?? '', author: c.name, body: c.c.body, at: c.c.createdAt })),
 		criticalIds,
+		waitingOn,
 		canEdit: isCoord,
 		canEditRecord: access.production && !book.archivedAt,
 	};

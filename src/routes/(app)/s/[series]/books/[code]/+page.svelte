@@ -1,10 +1,26 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '#lib/api-client.ts';
 	import { isValidIsbn13 } from '#lib/isbn.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
+
+	// ── Comments (any series member) ────────────────────────────────────────
+	let commentTask = $state(untrack(() => data.tasks[0]?.id ?? ''));
+	let commentBody = $state('');
+	let commentError = $state<string | null>(null);
+	async function postComment(e: SubmitEvent) {
+		e.preventDefault();
+		busy = true;
+		commentError = null;
+		const res = await api('POST', `/api/tasks/${commentTask}/comments`, { body: commentBody.trim() });
+		busy = false;
+		if (!res.ok) return (commentError = res.message);
+		commentBody = '';
+		await invalidateAll();
+	}
 
 	// ── Critical path for this book (same toggle and memory as the swimlane) ──
 	const CP_KEY = 'bookflow:criticalPath';
@@ -256,6 +272,7 @@
 							<td>
 								<span class="status" data-status={t.status}>{STATUS_LABEL[t.status]}</span>
 								{#if late(t)}<span class="flag">Late</span>{/if}
+								{#if t.status === 'in_review'}<div class="muted">waiting on {data.waitingOn[t.id]?.length ? data.waitingOn[t.id].join(', ') : 'a coordinator'}</div>{/if}
 								{#if t.scheduleState === 'unscheduled'}<span class="flag flag--warn">Unscheduled</span>{/if}
 							</td>
 							<td>{t.lead ?? '–'}{#if t.others.length}<div class="muted">+ {t.others.join(', ')}</div>{/if}</td>
@@ -367,6 +384,18 @@
 			{/each}
 
 			<h2 class="spaced">Comments</h2>
+			{#if data.tasks.length && !data.book.archivedAt}
+				<form class="comment-form" onsubmit={postComment}>
+					<select class="input" bind:value={commentTask} aria-label="Task">
+						{#each data.tasks as t (t.id)}<option value={t.id}>{t.stage}</option>{/each}
+					</select>
+					<textarea class="input" rows="2" bind:value={commentBody} maxlength="2000" placeholder="Add a comment for the team" aria-label="Comment"></textarea>
+					<div class="actions">
+						{#if commentError}<span class="field-error">{commentError}</span>{/if}
+						<button class="btn btn-primary" disabled={busy || !commentBody.trim()}>Post comment</button>
+					</div>
+				</form>
+			{/if}
 			{#each data.comments as c (c.id)}
 				<div class="entry">
 					<div><strong>{c.author}</strong> on {c.stage}</div>
@@ -461,6 +490,7 @@
 	.confirm p { margin: 0; }
 	.approve { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-2); }
 	.approve .field { flex: 1 1 220px; }
+	.comment-form { display: flex; flex-direction: column; gap: var(--sp-2); }
 	.blockers { margin: var(--sp-1) 0 0; padding-left: var(--sp-5); }
 	.approval { margin: 0; padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-sm); background: var(--muted); font-size: 13px; }
 	.approval--ok { background: var(--success-subtle); color: var(--success); }

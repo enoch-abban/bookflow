@@ -121,6 +121,7 @@ button { cursor: pointer; font: inherit; }
 
 .chip-status { font-size: 10px; font-weight: 500; white-space: nowrap; }
 .chip-date   { font-size: 10px; font-weight: 400; opacity: 0.8; }
+.chip-reviews { font-size: 10px; font-weight: 600; }
 .chip-copies { font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .chip-avatar {
 	width: 18px; height: 18px;
