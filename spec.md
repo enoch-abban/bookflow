@@ -30,12 +30,12 @@ Permissions come from four system roles, held per series. What someone does on a
 | Role | Can do | eSTEAM L2 example |
 | --- | --- | --- |
 | Admin (app-wide) | Everything across all series, including granting and removing the admin and manager roles, deactivating anyone, and app-wide settings such as holidays | Plan owner |
-| Manager (app-wide) | Everything an admin can do, except granting or removing the admin and manager roles, deactivating admins, and changing holidays; acts as coordinator on every series | None yet |
+| Manager (app-wide) | Everything an admin can do, except granting or removing the admin and manager roles, deactivating, reactivating or renaming admins and other managers, and changing holidays; acts as coordinator on every series | None yet |
 | Coordinator (per series) | On their series: set the target date and hard limit, edit the schedule (drag, resize, reassign, link), edit windows, tracks and stages, approve for print, plus everything a contributor can do | Project manager (named by admin later) |
 | Contributor (per series) | Update status, notes and feedback links on their own tasks; approve or return work on review tasks assigned to them; update print records on printing and binding tasks assigned to them | EdTechs, reviewers, designers, Production Unit |
 | Viewer (per series) | Read and comment only | Management |
 
-Admin and manager are app-wide roles held on the person. Coordinator, contributor and viewer are held per series, so a designer can be a coordinator on one series and a contributor on another. Wherever this spec lists Admin for an action, managers can do it too, except where it concerns system roles, deactivating admins or holidays.
+Admin and manager are app-wide roles held on the person. Coordinator, contributor and viewer are held per series, so a designer can be a coordinator on one series and a contributor on another. Wherever this spec lists Admin for an action, managers can do it too, except where it concerns system roles, holidays, or changing another admin's or manager's account; managers can deactivate, reactivate or rename only people whose role is Member.
 
 Every logged-in user can comment on any task. Permission checks run on the server for every action; the UI hides controls a role cannot use but never relies on that alone.
 
@@ -867,7 +867,7 @@ Pages load their data through SvelteKit load functions; every write goes through
 | `DELETE /api/invites/:id` | none | Invite revoked | Admin, the inviter |
 | `POST /api/invites/accept` | `{ token, displayName, password }` | Account created and linked to the person; verification code sent | Public, valid token |
 | `POST /api/people/:id/password-reset` | none | Reset link emailed to that person | Admin |
-| `PATCH /api/people/:id` | Any of `displayName, active`, systemRole | Updated person; deactivation ends their sessions; a systemRole change or deactivation that would leave no active admin is refused with 409 | Admin |
+| `PATCH /api/people/:id` | Any of `displayName, active`, systemRole | Updated person; deactivation ends their sessions; a systemRole change or deactivation that would leave no active admin is refused with 409; a manager editing an admin or another manager gets 403 | Admin |
 | `POST /api/series` | `{ name, startDate, targetDate, hardLimitDate?, templateId? }` | New series with tracks, stages, team labels and settings copied from the template | Admin |
 | `PATCH /api/series/:id` | Any of `name, targetDate, hardLimitDate, status, bookGroupLabel, enforceWindows, strictMode, defaultCopies, legalDepositCopies, printBufferDays`, windowOverflowDays, preview? | Updated series; existing print records are unchanged. When the change lowers windowOverflowDays or turns enforceWindows on, also the refit report, saved with the series change as one undoable batch; with preview set, the report only | Admin, coordinator |
 | `POST /api/series/:id/print-defaults/apply` | `{ fields: ["copiesPlanned", "depositCopies"] }` | Print records updated to the series defaults for every book whose printing has not started, plus the books skipped; one batch id | Admin, coordinator |
