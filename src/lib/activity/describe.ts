@@ -70,7 +70,8 @@ export function describe(e: LogEntry, n: Names): string {
 		case 'task':
 			if (e.action === 'status') return `${name}: ${statusLabel(String(b.status))} → ${statusLabel(String(a.status))}`;
 			if (e.action === 'deadline') return `${name}: due date ${a.dueDate ? fmtDate(a.dueDate) : 'cleared'}`;
-			if (e.action === 'reassign') {
+			// An assignment, or an undo or redo of one.
+			if (e.action === 'reassign' || Array.isArray(a.personIds)) {
 				const ids = Array.isArray(a.personIds) ? (a.personIds as string[]) : [];
 				if (!ids.length) return `${name} unassigned`;
 				const lead = typeof a.leadId === 'string' ? a.leadId : ids[0];

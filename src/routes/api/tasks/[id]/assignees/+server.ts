@@ -3,13 +3,15 @@ import { json, error } from '@sveltejs/kit';
 import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
 import { tasks, taskAssignees, activityLog, seriesMembers } from '#lib/server/db/schema.ts';
+import { currentAssignment, setAssignment } from '#lib/server/assignees.ts';
 import { and, eq, inArray } from 'drizzle-orm';
 import { requireCoord, parseBody, versionConflict, loadTaskWithSeries } from '#lib/server/api-auth.ts';
 import { assigneesSchema, parseOr400 } from '#lib/server/validation.ts';
 
 // POST /api/tasks/:id/assignees { personIds, leadId?, version } — replace a task's assignees
 // (spec: Task drawer). Everyone must be a member of the series; the lead must be one of them,
-// and defaults to the first. An empty list leaves the task unassigned.
+// and defaults to the first. An empty list leaves the task unassigned. Logged as one batch,
+// so the change can be undone like a move.
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const { id } = params;
 	const body = parseOr400(assigneesSchema, await parseBody(request));
@@ -27,23 +29,22 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (body.leadId && !personIds.includes(body.leadId)) throw error(422, 'The lead must be one of the assignees.');
 	const leadId = personIds.length ? (body.leadId ?? personIds[0]) : null;
 
-	const before = await db.select().from(taskAssignees).where(eq(taskAssignees.taskId, id));
+	const before = await currentAssignment(db, id);
 	const now = new Date().toISOString();
+	const batchId = ulid();
 
 	await db.transaction(async (tx) => {
-		await tx.delete(taskAssignees).where(eq(taskAssignees.taskId, id));
-		if (personIds.length)
-			await tx.insert(taskAssignees).values(personIds.map((pid) => ({ taskId: id, personId: pid, isLead: pid === leadId ? 1 : 0 })));
+		const after = await setAssignment(tx, id, { personIds, leadId });
 		await tx.update(tasks).set({ version: task.version + 1, updatedAt: now }).where(eq(tasks.id, id));
 		await tx.insert(activityLog).values({
 			id: ulid(), seriesId, actorId: personId, entity: 'task', entityId: id, action: 'reassign',
-			beforeJson: JSON.stringify({ personIds: before.map((a) => a.personId), leadId: before.find((a) => a.isLead)?.personId ?? null, version: task.version }),
-			afterJson: JSON.stringify({ personIds, leadId, version: task.version + 1 }),
-			createdAt: now,
+			beforeJson: JSON.stringify({ ...before, version: task.version }),
+			afterJson: JSON.stringify({ ...after, version: task.version + 1 }),
+			batchId, createdAt: now,
 		});
 	});
 
 	const updated = await db.select().from(tasks).where(eq(tasks.id, id)).then((r) => r[0]);
 	const assignees = await db.select().from(taskAssignees).where(eq(taskAssignees.taskId, id));
-	return json({ task: updated, assignees });
+	return json({ task: updated, assignees, batchId });
 };

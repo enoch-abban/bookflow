@@ -11,6 +11,7 @@
  * Like undo, it first checks that nothing it touches has changed since, and refuses if so.
  */
 import { and, eq, inArray, or } from 'drizzle-orm';
+import { currentAssignment, setAssignment } from '#lib/server/assignees.ts';
 import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
 import {
@@ -169,7 +170,16 @@ export async function reverseStep(opts: { sourceBatchId: string; entries: Row[];
 		// 2. Fields set back.
 		for (const op of ops.filter((o) => o.before && o.after)) {
 			const target = Object.fromEntries(Object.entries(op.before!).filter(([k]) => !SKIP_FIELDS.has(k)));
-			if (op.entity === 'task') {
+			if (op.entity === 'task' && Array.isArray(target.personIds)) {
+				// An assignment: put the assignees back rather than task fields.
+				const cur = await tx.select().from(tasks).where(eq(tasks.id, op.id)).then((r) => r[0]);
+				if (!cur) continue;
+				const was = await currentAssignment(tx, op.id);
+				const set = await setAssignment(tx, op.id, { personIds: target.personIds as string[], leadId: (target.leadId as string | null) ?? null });
+				await tx.update(tasks).set({ version: cur.version + 1, updatedAt: now }).where(eq(tasks.id, op.id));
+				await log(op, { ...was, version: cur.version }, { ...set, version: cur.version + 1 });
+				changed.push(op.id);
+			} else if (op.entity === 'task') {
 				const cur = await tx.select().from(tasks).where(eq(tasks.id, op.id)).then((r) => r[0]);
 				if (!cur) continue;
 				const prior = Object.fromEntries(Object.keys(target).map((k) => [k, cur[k as keyof typeof cur]]));

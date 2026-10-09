@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { openTask } from '#lib/task-drawer.svelte.ts';
+	import { reassignDrop, UNASSIGNED } from '#lib/schedule/reassign.ts';
 	import { latestEnd, sortWindows, windowAt } from '#lib/schedule/windows.ts';
 	import { setHolidays } from '#lib/schedule/calendar.ts';
 	import { criticalPath } from '#lib/schedule/critical.ts';
@@ -206,14 +207,34 @@
 	const bookMap = $derived(new Map(booksProp.map((b) => [b.id, b])));
 	const personMap = $derived(new Map(peopleProp.map((p) => [p.id, p])));
 
+	// Assignees, kept locally so a drag between person lanes shows at once.
+	let localAssignees = $state<Assignee[]>([]);
+	$effect(() => {
+		const fresh = assignees;
+		untrack(() => (localAssignees = [...fresh]));
+	});
+
 	// lead assignee per task (isLead=1 wins; fallback to first)
 	const leadMap = $derived.by(() => {
 		const m = new Map<string, string>();
-		for (const a of assignees) {
+		for (const a of localAssignees) {
 			if (!m.has(a.taskId) || a.isLead) m.set(a.taskId, a.personId);
 		}
 		return m;
 	});
+	// Everyone on each task, lead first.
+	const assigneeLists = $derived.by(() => {
+		const m: Record<string, string[]> = {};
+		for (const a of localAssignees) (m[a.taskId] ??= []).push(a.personId);
+		for (const [id, ps] of Object.entries(m)) {
+			const lead = leadMap.get(id);
+			m[id] = [...ps.filter((p) => p === lead), ...ps.filter((p) => p !== lead)];
+		}
+		return m;
+	});
+	const assigneesOf = { get: (taskId: string): string[] | undefined => assigneeLists[taskId] };
+	/** The lane a task's arrows attach to: its lead's, or Unassigned. */
+	const homeLane = (t: Task) => leadMap.get(t.id) ?? UNASSIGNED;
 
 	// ── Calendar ──────────────────────────────────────────────────────────────
 
@@ -338,6 +359,30 @@
 	// Unscheduled tasks (no window had room) are parked in an overflow lane at the bottom.
 	const unscheduled = $derived(localTasks.filter((t) => t.scheduleState === 'unscheduled'));
 
+	/** "3 to assign": unassigned work, leaving out print gates (a coordinator's action) and Done. */
+	function unassignedNote(placed: Task[]) {
+		const n = placed.filter((t) => !assigneesOf.get(t.id)?.length && stageMap.get(t.stageId)?.category !== 'gate' && t.status !== 'done').length;
+		return n ? `${n} to assign` : 'nothing to assign';
+	}
+
+	/** One lane per member, plus anyone assigned here who is not a member. */
+	function personLanes(placed: Task[]): Lane[] {
+		const ids = [...new Set([...members.map((m) => m.personId), ...localAssignees.map((a) => a.personId)])];
+		return ids
+			.map((id) => ({
+				id,
+				name: personMap.get(id)?.displayName ?? 'Someone',
+				team: members.find((m) => m.personId === id)?.teamLabel ?? (members.some((m) => m.personId === id) ? null : 'Not in this series')
+			}))
+			.sort((a, b) => (a.team ?? '').localeCompare(b.team ?? '') || a.name.localeCompare(b.name))
+			.map((m) => ({
+				id: m.id,
+				label: m.name,
+				groupLabel: m.team ?? undefined,
+				tasks: placed.filter((t) => assigneesOf.get(t.id)?.includes(m.id))
+			}));
+	}
+
 	const lanes = $derived.by((): Lane[] => {
 		const placed = localTasks.filter((t) => t.scheduleState !== 'unscheduled');
 		const main: Lane[] = laneMode === 'book'
@@ -348,18 +393,17 @@
 				groupLabel: b.groupLabel ?? undefined,
 				tasks: placed.filter((t) => t.bookId === b.id)
 			}))
-			// By person: sort by teamLabel, then displayName
-			: [...members]
-				.sort((a, b) => (a.teamLabel ?? '').localeCompare(b.teamLabel ?? ''))
-				.map((m) => {
-					const person = personMap.get(m.personId);
-					return {
-						id: m.personId,
-						label: person?.displayName ?? m.personId,
-						groupLabel: m.teamLabel ?? undefined,
-						tasks: placed.filter((t) => leadMap.get(t.id) === m.personId)
-					};
-				});
+			// By person: an Unassigned lane first, so nothing is invisible, then one lane per
+			// member by team label and name. A task shows in every assignee's lane.
+			: [
+				{
+					id: UNASSIGNED,
+					label: 'Unassigned',
+					sublabel: unassignedNote(placed),
+					tasks: placed.filter((t) => !assigneesOf.get(t.id)?.length)
+				},
+				...personLanes(placed)
+			];
 		if (!unscheduled.length) return main;
 		return [...main, {
 			id: '__unscheduled',
@@ -395,7 +439,8 @@
 				if (r < 0) r = rowEnds.push(t.endDate) - 1;
 				else rowEnds[r] = t.endDate;
 				sub.set(t.id, r);
-				centerY.set(t.id, y + r * ROW_H + ROW_H / 2);
+				// A task in several person lanes: arrows attach to its lead's bar.
+				if (laneMode === 'book' || lane.overflow || lane.id === homeLane(t)) centerY.set(t.id, y + r * ROW_H + ROW_H / 2);
 			}
 			const height = Math.max(1, rowEnds.length) * ROW_H;
 			boxes.push({ top: y, height, header, sub });
@@ -461,6 +506,11 @@
 		downX: number;
 		downY: number;
 		travelled: boolean;
+		/** Person view: the lane the bar was picked up from, and the one under the pointer. */
+		fromLane: string;
+		overLane: string;
+		dy: number;
+		el: HTMLElement;
 		origStart: string;
 		origEnd: string;
 		durationDays: number;
@@ -487,7 +537,7 @@
 		return clientX - rect.left + outerEl.scrollLeft - LABEL_W;
 	}
 
-	function onBarDown(e: PointerEvent, task: Task) {
+	function onBarDown(e: PointerEvent, task: Task, laneId: string) {
 		e.preventDefault();
 		const cx = clientToCanvasX(e.clientX);
 		const startWdIdx = workingDays.findIndex((d) => d.date === task.startDate);
@@ -496,6 +546,10 @@
 			downX: e.clientX,
 			downY: e.clientY,
 			travelled: false,
+			fromLane: laneId,
+			overLane: laneId,
+			dy: 0,
+			el: e.currentTarget as HTMLElement,
 			origStart: task.startDate,
 			origEnd: task.endDate,
 			durationDays: task.durationDays,
@@ -508,6 +562,23 @@
 	function onPointerMove(e: PointerEvent) {
 		if (!drag) return;
 		if (Math.abs(e.clientX - drag.downX) + Math.abs(e.clientY - drag.downY) > 4) drag.travelled = true;
+		// Person view: dragging up or down picks another person's lane (spec: Reassign).
+		if (laneMode === 'person' && drag.fromLane !== '__unscheduled') {
+			drag.dy = e.clientY - drag.downY;
+			// The bar follows the pointer, so look past it to the lane underneath.
+			const d = drag;
+			const lane = document.elementsFromPoint(e.clientX, e.clientY)
+				.filter((el) => !d.el.contains(el))
+				.map((el) => el.closest('[data-lane]'))
+				.find(Boolean) as HTMLElement | undefined;
+			const id = lane?.dataset.lane;
+			if (id && id !== '__unscheduled') drag.overLane = id;
+			// Moving to another lane keeps the dates: a reassign never reschedules.
+			if (drag.overLane !== drag.fromLane) {
+				localTasks = localTasks.map((x) => (x.id === d.taskId ? { ...x, startDate: d.origStart, endDate: d.origEnd } : x));
+				return;
+			}
+		}
 		const cx = clientToCanvasX(e.clientX) - drag.offsetX;
 		const snapped = snapX(cx);
 		if (!snapped) return;
@@ -567,6 +638,42 @@
 		}
 	}
 
+	/** Drop into another person's lane: swap assignees by the spec's rule, and save. */
+	async function reassign(taskId: string, from: string, to: string) {
+		const task = localTasks.find((t) => t.id === taskId);
+		if (!task) return;
+		const current = { personIds: assigneesOf.get(taskId) ?? [], leadId: leadMap.get(taskId) ?? null };
+		const next = reassignDrop(current, from, to);
+		if (!next) return;
+		const label = `${stageMap.get(task.stageId)?.name ?? 'Task'} · ${bookMap.get(task.bookId)?.code ?? ''}`;
+		const name = (id: string) => (id === UNASSIGNED ? 'Unassigned' : personMap.get(id)?.displayName ?? 'someone');
+		// Show the result straight away; put it back if the server refuses.
+		const before = localAssignees;
+		localAssignees = [
+			...localAssignees.filter((a) => a.taskId !== taskId),
+			...next.personIds.map((personId) => ({ taskId, personId, isLead: personId === next.leadId ? 1 : 0 }))
+		];
+		try {
+			const res = await fetch(`/api/tasks/${taskId}/assignees`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ ...next, version: task.version })
+			});
+			const body = await res.json().catch(() => ({}));
+			if (!res.ok) {
+				localAssignees = before;
+				showNotice(body.message ?? (res.status === 409 ? 'Someone else changed this task. Reload to see it.' : 'That reassignment could not be saved.'));
+				return;
+			}
+			localTasks = localTasks.map((t) => (t.id === taskId ? { ...t, version: body.task.version } : t));
+			showNotice(`${label}: ${name(from)} → ${name(to)}`, 'ok');
+			refreshStack();
+		} catch {
+			localAssignees = before;
+			showNotice('Could not reach the server. The reassignment was not saved.');
+		}
+	}
+
 	async function onPointerUp() {
 		if (!drag) return;
 		const d = drag;
@@ -575,6 +682,7 @@
 		const moved = localTasks.find((t) => t.id === d.taskId);
 		// A press without a drag is a click: open the task drawer (spec: Task drawer).
 		if (!d.travelled) return openTask(d.taskId);
+		if (laneMode === 'person' && d.overLane !== d.fromLane) return reassign(d.taskId, d.fromLane, d.overLane);
 		if (!moved || (moved.startDate === d.origStart && moved.endDate === d.origEnd)) return;
 		await saveSchedule(d.taskId, { startDate: d.origStart, endDate: d.origEnd, durationDays: d.durationDays });
 	}
@@ -917,7 +1025,13 @@
 					<div class="sl-grp-hdr" style="padding-left:{LABEL_W + 8}px">{grpHdr}</div>
 				{/if}
 				{@const box = layout.boxes[li]}
-				<div class="sl-lane" style="height:{box.height}px">
+				<div
+					class="sl-lane"
+					class:sl-lane--drop={drag?.travelled && laneMode === 'person' && drag.overLane === lane.id && drag.fromLane !== lane.id}
+					class:sl-lane--unassigned={lane.id === UNASSIGNED}
+					data-lane={lane.id}
+					style="height:{box.height}px"
+				>
 					<!-- Sticky label -->
 					<div class="sl-label">
 						{#if laneMode === 'book' && !lane.overflow}
@@ -925,7 +1039,7 @@
 						{:else}
 							<span class="sl-label-code">{lane.label}</span>
 						{/if}
-						{#if lane.sublabel && laneMode === 'book'}
+						{#if lane.sublabel && (laneMode === 'book' || lane.id === UNASSIGNED)}
 							<span class="sl-label-name">{lane.sublabel}</span>
 						{/if}
 					</div>
@@ -958,8 +1072,9 @@
 									class:cp-on={isCritical}
 									class:sl-bar--outside={outside}
 									class:sl-bar--unscheduled={lane.overflow}
-									style="left:{bx}px;width:{bw}px;top:{rowTop + 4}px;height:{ROW_H - 8}px"
-									onpointerdown={(e) => onBarDown(e, task)}
+									class:sl-bar--lifted={laneMode === 'person' && drag?.taskId === task.id && drag.fromLane === lane.id && drag.dy !== 0}
+									style="left:{bx}px;width:{bw}px;top:{rowTop + 4}px;height:{ROW_H - 8}px{laneMode === 'person' && drag?.taskId === task.id && drag.fromLane === lane.id ? `;transform:translateY(${drag.dy}px)` : ''}"
+									onpointerdown={(e) => onBarDown(e, task, lane.id)}
 									onpointerenter={() => (hoverId = task.id)}
 									onpointerleave={() => hoverId === task.id && (hoverId = null)}
 									onfocus={() => (hoverId = task.id)}
@@ -986,7 +1101,7 @@
 									<span class="sl-bar-lbl">
 										{stage?.name ?? ''}
 										{#if task.iteration > 1}<em>×{task.iteration}</em>{/if}
-										{#if lane.overflow}<em>· {bookMap.get(task.bookId)?.code ?? ''}</em>{/if}
+										{#if lane.overflow || laneMode === 'person'}<em>· {bookMap.get(task.bookId)?.code ?? ''}</em>{/if}
 										{#if outside}<em class="sl-flag">Outside window</em>{/if}
 									</span>
 									<span
@@ -1243,6 +1358,10 @@
 		border-bottom: 1px solid var(--border);
 		position: relative;
 	}
+	/* Person view: the lane a dragged bar would be reassigned to */
+	.sl-lane--drop { background: var(--primary-subtle); box-shadow: inset 0 0 0 2px var(--primary); }
+	.sl-lane--unassigned .sl-label { background: var(--tertiary-subtle); }
+	.sl-lane--unassigned .sl-label-code { color: var(--tertiary-foreground); }
 	.sl-label {
 		position: sticky;
 		left: 0;
@@ -1275,6 +1394,8 @@
 		flex-shrink: 0;
 		overflow: visible;
 	}
+
+	.sl-bar--lifted { z-index: 30; box-shadow: 0 6px 16px rgba(15, 23, 42, 0.25); cursor: grabbing; transition: none; }
 
 	/* ── Bars ─────────────────────────────────────────────────────────────────── */
 	.sl-bar {

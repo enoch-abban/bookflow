@@ -20,6 +20,7 @@ suite('activity lines', () => {
 	it('names who a task was assigned to, lead first', () => {
 		expect(describe(E('task', 't1', 'reassign', { personIds: [] }, { personIds: ['p2', 'p1'], leadId: 'p1' }), names)).toBe('G3 Layout assigned to Designer 1, Rev 2 (Designer 1 leads)');
 		expect(describe(E('task', 't1', 'reassign', { personIds: ['p1'] }, { personIds: [] }), names)).toBe('G3 Layout unassigned');
+		expect(describe(E('task', 't1', 'undo', { personIds: [], version: 2 }, { personIds: ['p1'], leadId: 'p1', version: 3 }), names)).toBe('G3 Layout assigned to Designer 1');
 	});
 
 	it('words settings changes, holidays and skips', () => {

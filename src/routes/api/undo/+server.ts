@@ -8,6 +8,7 @@ import { parseBody, resolvePerson } from '#lib/server/api-auth.ts';
 import { recentBatches, reversals, stepConflict, taskNames, undoRefusal } from '#lib/server/history.ts';
 import { batchKind } from '#lib/activity/describe.ts';
 import { reverseStep, taskBundle } from '#lib/server/reapply.ts';
+import { currentAssignment, sameAssignment, setAssignment } from '#lib/server/assignees.ts';
 
 type Body = { batchId: string; seriesId: string };
 
@@ -57,7 +58,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	// each field is restored from the earliest entry that recorded it, and the task must
 	// still be at the version its last entry produced.
 	// Rows the batch created or deleted outright are handled separately below.
-	const taskEntries = entries.filter(e => e.entity === 'task' && e.beforeJson && e.action !== 'delete');
+	const taskEntries = entries.filter(e => e.entity === 'task' && e.beforeJson && e.action !== 'delete' && e.action !== 'reassign');
+	// Assignment changes put the previous assignees back; the task must still have the ones set.
+	const reassigns = entries.filter(e => e.entity === 'task' && e.action === 'reassign' && e.beforeJson && e.afterJson);
 	const perTask = new Map<string, { before: Record<string, unknown>; expectedVersion: number }>();
 	for (const entry of taskEntries) {
 		const before = JSON.parse(entry.beforeJson!);
@@ -67,6 +70,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	}
 
 	const conflicting: string[] = [];
+	for (const entry of reassigns) {
+		const after = JSON.parse(entry.afterJson!);
+		const current = await db.select({ version: tasks.version }).from(tasks).where(eq(tasks.id, entry.entityId)).then(r => r[0]);
+		if (!current || !sameAssignment(await currentAssignment(db, entry.entityId), after)) conflicting.push(entry.entityId);
+	}
 	for (const [taskId, { expectedVersion }] of perTask) {
 		const current = await db.select({ version: tasks.version })
 			.from(tasks).where(eq(tasks.id, taskId)).then(r => r[0]);
@@ -258,6 +266,21 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				beforeJson: JSON.stringify(after), afterJson: JSON.stringify(before),
 				batchId: undoBatch, createdAt: now,
 			});
+		}
+
+		for (const entry of reassigns) {
+			const before = JSON.parse(entry.beforeJson!);
+			const current = await tx.select().from(tasks).where(eq(tasks.id, entry.entityId)).then(r => r[0]);
+			if (!current) continue;
+			const was = await currentAssignment(tx, entry.entityId);
+			const now_ = await setAssignment(tx, entry.entityId, before);
+			await tx.update(tasks).set({ version: current.version + 1, updatedAt: now }).where(eq(tasks.id, entry.entityId));
+			await tx.insert(activityLog).values({
+				id: ulid(), seriesId: batchSeriesId, actorId: personId, entity: 'task', entityId: entry.entityId, action: 'undo',
+				beforeJson: JSON.stringify({ ...was, version: current.version }), afterJson: JSON.stringify({ ...now_, version: current.version + 1 }),
+				batchId: undoBatch, createdAt: now,
+			});
+			restored.push({ id: entry.entityId, version: current.version + 1 });
 		}
 
 		for (const [taskId, { before }] of perTask) {

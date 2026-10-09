@@ -41,7 +41,8 @@ export const load: PageServerLoad = async ({ params }) => {
 			])
 		: [[], []];
 
-	const personIds = [...new Set(membersData.map((m) => m.personId))];
+	// Lanes for every member, plus anyone assigned here who is not one.
+	const personIds = [...new Set([...membersData.map((m) => m.personId), ...assigneesData.map((a) => a.personId)])];
 	const peopleData = personIds.length
 		? await db.select().from(people).where(inArray(people.id, personIds))
 		: [];
