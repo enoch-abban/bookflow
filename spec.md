@@ -35,7 +35,7 @@ Permissions come from four system roles, held per series. What someone does on a
 | Contributor (per series) | Update status, notes and feedback links on their own tasks; approve or return work on review tasks assigned to them; update print records on printing and binding tasks assigned to them | EdTechs, reviewers, designers, Production Unit |
 | Viewer (per series) | Read and comment only | Management |
 
-Admin and manager are app-wide roles held on the person. Coordinator, contributor and viewer are held per series, so a designer can be a coordinator on one series and a contributor on another. Wherever this spec lists Admin for an action, managers can do it too, except where it concerns system roles, holidays, or changing another admin's or manager's account; managers can deactivate, reactivate or rename only people whose role is Member.
+Admin and manager are app-wide roles held on the person. Coordinator, contributor and viewer are held per series, so a designer can be a coordinator on one series and a contributor on another. Wherever this spec lists Admin for an action, managers can do it too, except where it concerns system roles, holidays, or changing another admin's or manager's account; managers can deactivate, reactivate or rename only people whose role is Member. Separately, everyone can change their own display name from the account menu, whatever their role. Nobody can deactivate themselves or change their own role, except that an admin can step down once another active admin exists.
 
 Every logged-in user can comment on any task. Permission checks run on the server for every action; the UI hides controls a role cannot use but never relies on that alone.
 
@@ -896,6 +896,7 @@ Pages load their data through SvelteKit load functions; every write goes through
 | `POST /api/admin-transfers` | `{ toPersonId, senderNewRole, password, code }` | Pending transfer, recipient emailed; 409 if one is already pending or the recipient has no account | Admin |
 | `POST /api/admin-transfers/accept` | `{ token }` | Both people's new roles, swapped in one transaction; 410 if expired or voided | The named recipient |
 | `DELETE /api/admin-transfers/:id` | none | Transfer cancelled by the sender or declined by the recipient | Sender or recipient |
+| `PATCH /api/me` | `{ displayName }` | Updated person; the only self-edit allowed, so role and active status cannot be changed here | Anyone signed in, for their own account |
 
 A stale `version` returns HTTP 409 with the current task so the client can snap back. A permission failure returns 403. Validation uses Zod schemas shared between client and server.
 
