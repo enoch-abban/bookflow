@@ -3,7 +3,7 @@ import { drizzle } from 'drizzle-orm/libsql';
 import type { BatchItem } from 'drizzle-orm/batch';
 import { createClient, type Client, type Transaction } from '@libsql/client';
 import * as schema from './schema';
-import { DATABASE_URL } from '$app/env/private';
+import { DATABASE_URL, DATABASE_AUTH_TOKEN } from '$app/env/private';
 import { dev } from '$app/env';
 
 const url = DATABASE_URL;
@@ -70,7 +70,8 @@ function countedClient(client: Client): Client {
 	});
 }
 
-const client = countedClient(createClient({ url }));
+// Turso needs its auth token in production; a local file: URL ignores it.
+const client = countedClient(createClient({ url, authToken: DATABASE_AUTH_TOKEN }));
 
 export const db = drizzle(client, { schema });
 
