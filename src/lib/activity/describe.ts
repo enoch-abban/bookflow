@@ -70,6 +70,13 @@ export function describe(e: LogEntry, n: Names): string {
 		case 'task':
 			if (e.action === 'status') return `${name}: ${statusLabel(String(b.status))} → ${statusLabel(String(a.status))}`;
 			if (e.action === 'deadline') return `${name}: due date ${a.dueDate ? fmtDate(a.dueDate) : 'cleared'}`;
+			if (e.action === 'reassign') {
+				const ids = Array.isArray(a.personIds) ? (a.personIds as string[]) : [];
+				if (!ids.length) return `${name} unassigned`;
+				const lead = typeof a.leadId === 'string' ? a.leadId : ids[0];
+				const who = [lead, ...ids.filter((id) => id !== lead)].map((id) => n.person(id) ?? 'someone');
+				return `${name} assigned to ${who.join(', ')}${ids.length > 1 ? ` (${who[0]} leads)` : ''}`;
+			}
 			if (e.action === 'create') return `Added task ${name}`;
 			if (e.action === 'delete') return `Removed task ${name}`;
 			if (undo && verb !== 'restored') return `${name} ${verb}`;

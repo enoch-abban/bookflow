@@ -1,8 +1,35 @@
 <script lang="ts">
 	import type { PageProps } from './$types';
 	import { statusLabel } from '#lib/status.ts';
+	import { openTask } from '#lib/task-drawer.svelte.ts';
 
 	let { data }: PageProps = $props();
+
+	// ── Filters (spec: Status matrix): book group, batch, person (or Unassigned), status ──
+	let fGroup = $state('');
+	let fBatch = $state('');
+	let fPerson = $state('');
+	let fStatus = $state('');
+	const filtering = $derived(!!(fGroup || fBatch || fPerson || fStatus));
+	const assigneesOf = $derived(
+		data.assignees.reduce<Record<string, string[]>>((acc, a) => ((acc[a.taskId] ??= []).push(a.personId), acc), {})
+	);
+	const gateStages = $derived(new Set(data.stages.filter((s) => s.category === 'gate').map((s) => s.id)));
+	const isUnassigned = (t: (typeof data.tasks)[0]) => !assigneesOf[t.id]?.length && !gateStages.has(t.stageId) && t.status !== 'done';
+	/** Whether a task passes the person and status filters. */
+	function matches(t: (typeof data.tasks)[0]) {
+		if (fStatus && t.status !== fStatus) return false;
+		if (fPerson === '__none') return isUnassigned(t);
+		if (fPerson && !assigneesOf[t.id]?.includes(fPerson)) return false;
+		return true;
+	}
+	const groupOptions = $derived([...new Set(data.books.map((b) => b.groupLabel ?? 'Other'))]);
+	const batchOptions = $derived([...new Set(data.books.map((b) => b.batch).filter((x): x is number => x != null))].sort((a, b) => a - b));
+	const statusOptions = ['not_started', 'in_progress', 'in_review', 'returned', 'blocked', 'done'];
+	const peopleOptions = $derived([...data.people].sort((a, b) => a.displayName.localeCompare(b.displayName)));
+	function clearFilters() {
+		fGroup = fBatch = fPerson = fStatus = '';
+	}
 
 	// ── Derived lookup maps ───────────────────────────────────────────────────
 
@@ -24,7 +51,7 @@
 	const leadMap = $derived.by(() => {
 		const m = new Map<string, (typeof data.people)[0]>(); // taskId → lead person
 		for (const a of data.assignees) {
-			if (!a.isLead) continue;
+			if (m.has(a.taskId) && !a.isLead) continue;
 			const p = data.people.find((p) => p.id === a.personId);
 			if (p) m.set(a.taskId, p);
 		}
@@ -35,6 +62,10 @@
 		const seen = new Map<string, (typeof data.books)[0][]>();
 		for (const book of data.books) {
 			const key = book.groupLabel ?? 'Other';
+			if (fGroup && key !== fGroup) continue;
+			if (fBatch && String(book.batch) !== fBatch) continue;
+			// With a person or status filter, show only books with a matching task.
+			if ((fPerson || fStatus) && !data.tasks.some((t) => t.bookId === book.id && stageApplies(book.trackId, t.stageId) && matches(t))) continue;
 			if (!seen.has(key)) seen.set(key, []);
 			seen.get(key)!.push(book);
 		}
@@ -97,8 +128,37 @@
 		{#if data.stats.atRisk > 0}
 			<span class="meta-badge badge-risk">{data.stats.atRisk} at risk</span>
 		{/if}
+		{#if data.stats.unassignedSoon > 0}
+			<button class="meta-badge badge-unassigned" onclick={() => { clearFilters(); fPerson = '__none'; }} title="Unassigned tasks due to start within the next five working days">
+				{data.stats.unassignedSoon} unassigned starting soon
+			</button>
+		{/if}
 	</div>
 </div>
+
+{#if data.books.length}
+	<div class="filters" role="group" aria-label="Filter the matrix">
+		<label><span>{data.series.bookGroupLabel}</span>
+			<select class="input" bind:value={fGroup}><option value="">All</option>{#each groupOptions as g (g)}<option value={g}>{g}</option>{/each}</select>
+		</label>
+		{#if batchOptions.length}
+			<label><span>Batch</span>
+				<select class="input" bind:value={fBatch}><option value="">All</option>{#each batchOptions as b (b)}<option value={String(b)}>Batch {b}</option>{/each}</select>
+			</label>
+		{/if}
+		<label><span>Person</span>
+			<select class="input" bind:value={fPerson}>
+				<option value="">Everyone</option>
+				<option value="__none">Unassigned</option>
+				{#each peopleOptions as p (p.id)}<option value={p.id}>{p.displayName}</option>{/each}
+			</select>
+		</label>
+		<label><span>Status</span>
+			<select class="input" bind:value={fStatus}><option value="">Any</option>{#each statusOptions as st (st)}<option value={st}>{statusLabel(st)}</option>{/each}</select>
+		</label>
+		{#if filtering}<button class="btn btn-link" onclick={clearFilters}>Clear filters</button>{/if}
+	</div>
+{/if}
 
 <!-- ── Matrix ─────────────────────────────────────────────────────────────── -->
 {#if data.books.length === 0}
@@ -136,14 +196,19 @@
 								<td class="col-stage stage-cell">
 									{#if task}
 										{@const lead = leadMap.get(task.id)}
-										<div
+										<button
 											class="chip"
+											class:faded={(fPerson || fStatus) && !matches(task)}
 											data-status={task.status}
 											title="{statusLabel(task.status)} · {task.endDate}"
+											onclick={() => openTask(task.id)}
+											aria-label="{book.code} {stage.name}: {statusLabel(task.status)}, ends {fmtDate(task.endDate)}{lead ? `, ${lead.displayName}` : isUnassigned(task) ? ', unassigned' : ''}"
 										>
 											<span class="chip-status">{statusLabel(task.status)}</span>
 											{#if lead}
 												<span class="chip-avatar">{initials(lead.displayName)}</span>
+											{:else if isUnassigned(task)}
+												<span class="chip-unassigned">Unassigned</span>
 											{/if}
 											<span class="chip-date">{fmtDate(task.endDate)}</span>
 											{#if data.reviewsDone[task.id] || task.status === 'in_review'}
@@ -153,7 +218,7 @@
 												{@const c = data.copies[book.id]}
 												<span class="chip-copies" title="Copies {stage.key === 'printing' ? 'printed' : 'bound'} against the print run">{stage.key === 'printing' ? c.printed : c.bound} of {c.run}</span>
 											{/if}
-										</div>
+										</button>
 									{:else}
 										<div class="chip chip--empty">—</div>
 									{/if}
@@ -196,6 +261,14 @@
 	.badge-risk { background: var(--tertiary-subtle); color: var(--tertiary-foreground); }
 
 	/* ── Matrix wrapper ──────────────────────────────────────────────────────── */
+	.filters { display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: flex-end; padding: var(--sp-3) var(--sp-6); border-bottom: 1px solid var(--border); }
+	.filters label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted-foreground); font-weight: 500; }
+	.filters .input { min-width: 140px; padding-top: 4px; padding-bottom: 4px; font-size: 13px; }
+	.badge-unassigned { border: 1px dashed var(--muted-foreground); cursor: pointer; background: var(--muted); color: var(--foreground); font: inherit; font-size: 12px; font-weight: 600; }
+	.chip-unassigned { font-size: 10px; font-weight: 700; color: var(--tertiary-foreground); background: var(--tertiary-subtle); padding: 0 4px; border-radius: 3px; }
+	button.chip { width: 100%; border: none; font: inherit; text-align: center; cursor: pointer; }
+	button.chip:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+	.chip.faded { opacity: 0.25; }
 	.matrix-empty {
 		margin: var(--sp-6); padding: var(--sp-8); text-align: center; background: var(--muted); border-radius: var(--radius);
 		display: flex; flex-direction: column; align-items: center; gap: var(--sp-3); color: var(--muted-foreground);

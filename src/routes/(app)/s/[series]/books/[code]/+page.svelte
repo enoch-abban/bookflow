@@ -4,6 +4,7 @@
 	import { api } from '#lib/api-client.ts';
 	import { isValidIsbn13 } from '#lib/isbn.ts';
 	import { STATUS_LABEL, statusLabel } from '#lib/status.ts';
+	import { openTask } from '#lib/task-drawer.svelte.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -264,7 +265,7 @@
 						{@const v = variance(t.variance)}
 						<tr class:dim={t.stageArchived} class:cp-on={critPath && critical.has(t.id)} class:cp-dim={critPath && !critical.has(t.id)}>
 							<td>
-								<div class="stage">{t.stage}{#if t.iteration > 1}<span class="iter">×{t.iteration}</span>{/if}</div>
+								<div class="stage"><button class="open-task" onclick={() => openTask(t.id)}>{t.stage}</button>{#if t.iteration > 1}<span class="iter">×{t.iteration}</span>{/if}</div>
 								{#if t.stageArchived}<div class="muted">archived stage</div>{/if}
 								{#if t.feedbackUrl}<a class="muted" href={t.feedbackUrl} target="_blank" rel="noopener">Feedback file</a>{/if}
 							</td>
@@ -274,7 +275,7 @@
 								{#if t.status === 'in_review'}<div class="muted">waiting on {data.waitingOn[t.id]?.length ? data.waitingOn[t.id].join(', ') : 'a coordinator'}</div>{/if}
 								{#if t.scheduleState === 'unscheduled'}<span class="flag flag--warn">Unscheduled</span>{/if}
 							</td>
-							<td>{t.lead ?? '–'}{#if t.others.length}<div class="muted">+ {t.others.join(', ')}</div>{/if}</td>
+							<td>{#if t.lead}{t.lead}{:else if t.status !== 'done' && t.category !== 'gate'}<span class="flag flag--warn">Unassigned</span>{:else}–{/if}{#if t.others.length}<div class="muted">+ {t.others.join(', ')}</div>{/if}</td>
 							<td class="nowrap">{fmtDate(t.startDate)} → {fmtDate(t.endDate)}<div class="muted">{t.durationDays} {t.durationDays === 1 ? 'day' : 'days'}</div></td>
 							<td class="muted">{t.window ?? '–'}</td>
 							<td class="nowrap">{fmtDate(t.baselineEnd)}</td>
@@ -497,4 +498,6 @@
 	.entry { border-top: 1px solid var(--border); padding-top: var(--sp-2); font-size: 13px; }
 	.entry p { margin: var(--sp-1) 0 0; }
 	.returned { color: var(--tertiary-foreground); font-weight: 600; }
+	.open-task { border: none; background: none; padding: 0; font: inherit; font-weight: inherit; color: var(--primary); cursor: pointer; text-align: left; }
+	.open-task:hover { text-decoration: underline; }
 </style>

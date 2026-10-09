@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { PageProps } from './$types';
 	import { enhance } from '$app/forms';
+	import { openTask } from '#lib/task-drawer.svelte.ts';
 	import { statusLabel } from '#lib/status.ts';
 
 	let { data, form }: PageProps = $props();
@@ -31,8 +32,10 @@
 					<div class="task-row review-row" data-status="in_review">
 						<div class="task-info">
 							<div class="task-title">
-								<span class="task-book">{r.bookCode}</span>
-								<span class="task-stage">{r.stageName}</span>
+								<button class="open-task" onclick={() => openTask(r.taskId)}>
+									<span class="task-book">{r.bookCode}</span>
+									<span class="task-stage">{r.stageName}</span>
+								</button>
 								<span class="iter-badge">round {r.iteration}</span>
 							</div>
 							<div class="task-meta">
@@ -81,8 +84,10 @@
 						<div class="task-row" data-status={row.status}>
 							<div class="task-info">
 								<div class="task-title">
-									<span class="task-book">{row.bookCode}</span>
-									<span class="task-stage">{row.stageName}</span>
+									<button class="open-task" onclick={() => openTask(row.taskId)}>
+										<span class="task-book">{row.bookCode}</span>
+										<span class="task-stage">{row.stageName}</span>
+									</button>
 									{#if row.iteration > 1}
 										<span class="iter-badge">×{row.iteration}</span>
 									{/if}
@@ -184,6 +189,8 @@
 		margin-bottom: var(--sp-1);
 	}
 	.task-book  { font-weight: 700; font-size: 14px; }
+	.open-task { display: inline-flex; gap: var(--sp-2); align-items: baseline; border: none; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; }
+	.open-task:hover .task-stage, .open-task:focus-visible .task-stage { color: var(--primary); text-decoration: underline; }
 	.task-stage { font-size: 14px; color: var(--muted-foreground); }
 	.iter-badge {
 		font-size: 11px; font-weight: 700;

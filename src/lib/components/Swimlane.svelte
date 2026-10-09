@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
+	import { openTask } from '#lib/task-drawer.svelte.ts';
 	import { latestEnd, sortWindows, windowAt } from '#lib/schedule/windows.ts';
 	import { setHolidays } from '#lib/schedule/calendar.ts';
 	import { criticalPath } from '#lib/schedule/critical.ts';
@@ -456,6 +457,10 @@
 
 	type DragState = {
 		taskId: string;
+		/** Pointer position at press, to tell a click (opens the drawer) from a drag. */
+		downX: number;
+		downY: number;
+		travelled: boolean;
 		origStart: string;
 		origEnd: string;
 		durationDays: number;
@@ -488,6 +493,9 @@
 		const startWdIdx = workingDays.findIndex((d) => d.date === task.startDate);
 		drag = {
 			taskId: task.id,
+			downX: e.clientX,
+			downY: e.clientY,
+			travelled: false,
 			origStart: task.startDate,
 			origEnd: task.endDate,
 			durationDays: task.durationDays,
@@ -499,6 +507,7 @@
 
 	function onPointerMove(e: PointerEvent) {
 		if (!drag) return;
+		if (Math.abs(e.clientX - drag.downX) + Math.abs(e.clientY - drag.downY) > 4) drag.travelled = true;
 		const cx = clientToCanvasX(e.clientX) - drag.offsetX;
 		const snapped = snapX(cx);
 		if (!snapped) return;
@@ -564,6 +573,8 @@
 		drag = null; // clear immediately so $effect re-sync doesn't fire mid-save
 
 		const moved = localTasks.find((t) => t.id === d.taskId);
+		// A press without a drag is a click: open the task drawer (spec: Task drawer).
+		if (!d.travelled) return openTask(d.taskId);
 		if (!moved || (moved.startDate === d.origStart && moved.endDate === d.origEnd)) return;
 		await saveSchedule(d.taskId, { startDate: d.origStart, endDate: d.origEnd, durationDays: d.durationDays });
 	}
@@ -955,6 +966,7 @@
 									onblur={() => hoverId === task.id && (hoverId = null)}
 									role="button"
 									tabindex="0"
+									onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openTask(task.id))}
 									title={tooltip(task, [
 										!!ovf && `overflows ${ovf.days} working day${ovf.days === 1 ? '' : 's'}`,
 										outside && 'Outside window',

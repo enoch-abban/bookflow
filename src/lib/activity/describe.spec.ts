@@ -5,7 +5,7 @@ const names: Names = {
 	task: (id) => ({ t1: 'G3 Layout', t2: 'G3 Printing', t3: 'G4 Layout' } as Record<string, string>)[id],
 	book: (id) => ({ b1: 'G3' } as Record<string, string>)[id],
 	stage: (id) => ({ s1: 'Layout' } as Record<string, string>)[id],
-	track: () => undefined, window: () => undefined, person: () => undefined,
+	track: () => undefined, window: () => undefined, person: (id) => ({ p1: 'Designer 1', p2: 'Rev 2' } as Record<string, string>)[id],
 };
 const E = (entity: string, entityId: string, action: string, before: object | null, after: object | null): LogEntry =>
 	({ id: Math.random().toString(), entity, entityId, action, before: before as LogEntry['before'], after: after as LogEntry['after'] });
@@ -15,6 +15,11 @@ suite('activity lines', () => {
 		expect(describe(E('task', 't1', 'move', { startDate: '2026-10-05', endDate: '2026-10-08' }, { startDate: '2026-10-07', endDate: '2026-10-12' }), names))
 			.toBe('G3 Layout moved: Oct 5 – Oct 8 → Oct 7 – Oct 12');
 		expect(describe(E('task', 't1', 'status', { status: 'in_progress' }, { status: 'done' }), names)).toBe('G3 Layout: In progress → Done');
+	});
+
+	it('names who a task was assigned to, lead first', () => {
+		expect(describe(E('task', 't1', 'reassign', { personIds: [] }, { personIds: ['p2', 'p1'], leadId: 'p1' }), names)).toBe('G3 Layout assigned to Designer 1, Rev 2 (Designer 1 leads)');
+		expect(describe(E('task', 't1', 'reassign', { personIds: ['p1'] }, { personIds: [] }), names)).toBe('G3 Layout unassigned');
 	});
 
 	it('words settings changes, holidays and skips', () => {

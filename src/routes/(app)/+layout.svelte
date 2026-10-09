@@ -4,6 +4,7 @@
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import Tour from '#lib/components/Tour.svelte';
+	import TaskDrawer from '#lib/components/TaskDrawer.svelte';
 	import { stepsFor } from '#lib/tour/steps.ts';
 	let { children, data }: LayoutProps = $props();
 
@@ -73,6 +74,7 @@
 
 {@render children()}
 
+<TaskDrawer />
 <Tour steps={tourSteps} ctx={tourCtx} bind:open={touring} onend={endTour} />
 
 <style>

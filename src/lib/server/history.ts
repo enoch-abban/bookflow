@@ -65,6 +65,7 @@ export async function namesFor(seriesId: string | null, entries: LogEntry[]): Pr
 			if (!o) continue;
 			for (const k of ['predecessorId', 'successorId', 'taskId']) if (typeof o[k] === 'string') taskIds.add(o[k] as string);
 			if (typeof o.personId === 'string') personIds.add(o.personId);
+			if (Array.isArray(o.personIds)) for (const id of o.personIds) if (typeof id === 'string') personIds.add(id);
 		}
 		if (e.entity === 'person' || e.entity === 'member') personIds.add(e.entityId);
 	}

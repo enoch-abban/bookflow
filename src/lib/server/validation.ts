@@ -224,3 +224,9 @@ export const createSeriesSchema = z
 	})
 	.refine((v) => v.targetDate >= v.startDate, { message: 'The target date must be on or after the start date.', path: ['targetDate'] })
 	.refine((v) => !v.hardLimitDate || v.hardLimitDate >= v.targetDate, { message: 'The hard limit must be on or after the target date.', path: ['hardLimitDate'] });
+
+export const assigneesSchema = z.object({
+	personIds: z.array(z.string().min(1)).max(20, 'Assign at most 20 people.'),
+	leadId: z.string().min(1).nullable().optional(),
+	version: z.number().int()
+});

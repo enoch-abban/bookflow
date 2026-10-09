@@ -10,8 +10,12 @@ import { statusGuard, statusUpdates } from '#lib/server/task-status.ts';
 import { loadSeriesContext } from '#lib/server/series-context.ts';
 import { refit } from '#lib/server/refit.ts';
 import { refitChanges, refitReport, writeTaskChanges } from '#lib/server/schedule-write.ts';
+import { taskDetail } from '#lib/server/task-detail.ts';
 
 // ── PATCH /api/tasks/:id ─────────────────────────────────────────────────────
+// GET /api/tasks/:id — everything the task drawer shows, for any series member.
+export const GET: RequestHandler = async ({ params, locals }) => json(await taskDetail(locals, params.id));
+
 // Body: any of { title, notes, status, blockedReason, feedbackUrl, overflowAllowed, version, preview }
 // Coordinator can change anything; assignees can change status, notes, feedbackUrl.
 // Turning overflowAllowed off refits the schedule; with preview the impact is returned unsaved.

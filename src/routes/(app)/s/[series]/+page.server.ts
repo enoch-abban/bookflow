@@ -11,7 +11,10 @@ import {
 	people,
 	printRecords,
 	reviewCycles,
+	seriesMembers,
 } from '#lib/server/db/schema.ts';
+import { refreshHolidays } from '#lib/server/calendar-db.ts';
+import { addWorkingDays } from '#lib/schedule/calendar.ts';
 import { and, eq, inArray, asc, isNull } from 'drizzle-orm';
 
 export const load: PageServerLoad = async ({ params }) => {
@@ -47,7 +50,9 @@ export const load: PageServerLoad = async ({ params }) => {
 		? await db.select().from(taskAssignees).where(inArray(taskAssignees.taskId, taskIds))
 		: [];
 
-	const personIds = [...new Set(assigneesData.map((a) => a.personId))];
+	// Everyone who could appear in the Person filter: members plus anyone assigned here.
+	const memberRows = await db.select({ personId: seriesMembers.personId }).from(seriesMembers).where(eq(seriesMembers.seriesId, sid));
+	const personIds = [...new Set([...assigneesData.map((a) => a.personId), ...memberRows.map((m) => m.personId)])];
 	const peopleData = personIds.length
 		? await db.select().from(people).where(inArray(people.id, personIds))
 		: [];
@@ -74,6 +79,14 @@ export const load: PageServerLoad = async ({ params }) => {
 		}
 	}
 
+	// Unassigned work due to start within the next five working days (spec: Status matrix).
+	// Gates are left out: approving for print is a coordinator's action, not an assignment.
+	await refreshHolidays();
+	const soon = addWorkingDays(today, 5);
+	const assigned = new Set(assigneesData.map((a) => a.taskId));
+	const gateIds = new Set(stagesData.filter((s) => s.category === 'gate').map((s) => s.id));
+	const unassignedSoon = tasksData.filter((t) => !assigned.has(t.id) && !gateIds.has(t.stageId) && t.status !== 'done' && t.scheduleState === 'scheduled' && t.startDate <= soon).length;
+
 	// Latest binding end date = projected finish
 	const projectedFinish = tasksData
 		.filter((t) => {
@@ -92,6 +105,6 @@ export const load: PageServerLoad = async ({ params }) => {
 		people: peopleData,
 		copies,
 		reviewsDone,
-		stats: { late, atRisk, projectedFinish, today },
+		stats: { late, atRisk, projectedFinish, today, unassignedSoon },
 	};
 };
