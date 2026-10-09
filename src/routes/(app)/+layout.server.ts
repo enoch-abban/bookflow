@@ -3,6 +3,7 @@ import { db } from '#lib/server/db/index.ts';
 import { people, seriesMembers } from '#lib/server/db/schema.ts';
 import { and, eq } from 'drizzle-orm';
 import { visibleSeries } from '#lib/server/templates.ts';
+import { pendingFor } from '#lib/server/admin-transfer.ts';
 
 const LAST_SERIES = 'bookflow_series';
 
@@ -38,5 +39,7 @@ export const load: LayoutServerLoad = async ({ locals, params, cookies }) => {
 		// For the guided tour: what to show, and whether it still starts by itself.
 		role: isAdmin ? me!.systemRole as 'admin' | 'manager' : (role ?? 'contributor') as 'coordinator' | 'contributor' | 'viewer',
 		tourDone: !me || !!me.tourDoneAt,
+		// An admin role offered to this person, shown as a banner until they accept or decline.
+		incomingTransfer: me ? (await pendingFor(me.id)).find((t) => !t.mine) ?? null : null,
 	};
 };

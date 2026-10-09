@@ -139,8 +139,19 @@ export function describe(e: LogEntry, n: Names): string {
 				: `Added ${n.person((a.personId as string) ?? e.entityId) ?? 'someone'} to the series`;
 		case 'person':
 			if (e.action === 'password_reset') return `Sent a password reset to ${n.person(e.entityId) ?? 'someone'}`;
+			if (e.action === 'role') {
+				const role = String(a.systemRole ?? '');
+				return `${n.person(e.entityId) ?? (a.displayName as string) ?? 'Someone'} is now ${role === 'admin' ? 'an Admin' : role === 'manager' ? 'a Manager' : 'a Member'}${a.via === 'admin_transfer' ? ' (admin transfer)' : ''}`;
+			}
 			if (e.action === 'update') return `${n.person(e.entityId) ?? 'Someone'}: ${fieldChanges(b, a)}`;
 			return `Added person ${(a.displayName as string) ?? n.person(e.entityId) ?? ''}`.trim();
+		case 'admin_transfer':
+			if (e.action === 'create') return `Offered the admin role to ${(a.toName as string) ?? n.person(a.to as string) ?? 'someone'}`;
+			if (e.action === 'accept') return `${n.person(a.to as string) ?? 'The recipient'} accepted the admin role`;
+			if (e.action === 'decline') return 'Declined an admin role transfer';
+			if (e.action === 'cancel') return 'Cancelled an admin role transfer';
+			if (e.action === 'void') return `An admin role transfer lapsed (${a.reason ?? 'voided'})`;
+			return 'Admin role transfer';
 		case 'invite':
 			if (e.action === 'accept') return `${(a.displayName as string) ?? n.person(a.personId as string) ?? 'Someone'} accepted their invite`;
 			if (e.action === 'revoke') return `Revoked an invite for ${n.person(a.personId as string) ?? 'someone'}`;

@@ -1,4 +1,5 @@
-import { sqliteTable, text, integer, real, index, primaryKey } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, index, primaryKey, check } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
 import { ulid } from 'ulid';
 
 export * from './auth.schema';
@@ -184,6 +185,32 @@ export const invites = sqliteTable(
 	(t) => [index('idx_invites_person').on(t.personId)]
 );
 
+// An admin handing their role to someone (spec: Transferring the admin role). Nothing changes
+// until the recipient accepts; only the token's hash is stored.
+export const adminTransfers = sqliteTable(
+	'admin_transfers',
+	{
+		id: text('id').primaryKey().$defaultFn(newId),
+		fromPersonId: text('from_person_id')
+			.notNull()
+			.references(() => people.id),
+		toPersonId: text('to_person_id')
+			.notNull()
+			.references(() => people.id),
+		senderNewRole: text('sender_new_role', { enum: ['manager', 'member'] }).notNull().default('manager'),
+		tokenHash: text('token_hash').notNull().unique(),
+		createdAt: text('created_at').notNull(),
+		expiresAt: text('expires_at').notNull(), // created_at + 7 days
+		acceptedAt: text('accepted_at'),
+		cancelledAt: text('cancelled_at') // cancelled, declined or voided
+	},
+	(t) => [
+		index('idx_transfers_from').on(t.fromPersonId),
+		index('idx_transfers_to').on(t.toPersonId),
+		check('transfer_not_self', sql`${t.fromPersonId} <> ${t.toPersonId}`)
+	]
+);
+
 // ── Calendar ─────────────────────────────────────────────────────────────────
 
 export const windows = sqliteTable('windows', {
@@ -367,7 +394,7 @@ export const activityLog = sqliteTable(
 		entity: text('entity', {
 			enum: [
 				'series', 'template', 'track', 'stage', 'stage_link', 'skip', 'book', 'task', 'dependency',
-				'window', 'holiday', 'member', 'person', 'invite', 'review',
+				'window', 'holiday', 'member', 'person', 'invite', 'admin_transfer', 'review',
 				'approval', 'print_record', 'comment', 'baseline'
 			]
 		}).notNull(),

@@ -23,6 +23,12 @@ suite('activity lines', () => {
 		expect(describe(E('task', 't1', 'undo', { personIds: [], version: 2 }, { personIds: ['p1'], leadId: 'p1', version: 3 }), names)).toBe('G3 Layout assigned to Designer 1');
 	});
 
+	it('words role changes and admin transfers', () => {
+		expect(describe(E('person', 'p2', 'role', { systemRole: 'member' }, { systemRole: 'manager' }), names)).toBe('Rev 2 is now a Manager');
+		expect(describe(E('person', 'p1', 'role', { systemRole: 'member' }, { systemRole: 'admin', via: 'admin_transfer' }), names)).toBe('Designer 1 is now an Admin (admin transfer)');
+		expect(describe(E('admin_transfer', 'x', 'void', null, { reason: 'expired' }), names)).toBe('An admin role transfer lapsed (expired)');
+	});
+
 	it('words settings changes, holidays and skips', () => {
 		expect(describe(E('series', 'x', 'update', { targetDate: '2026-11-24', version: 1 }, { targetDate: '2026-11-27', version: 2 }), names))
 			.toBe('Series target date Nov 24 → Nov 27');

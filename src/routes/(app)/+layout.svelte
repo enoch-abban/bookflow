@@ -58,6 +58,12 @@
 		if (e.key === 'Escape' && accountOpen) accountOpen = false;
 	}
 
+	async function declineTransfer() {
+		if (!data.incomingTransfer) return;
+		await fetch(`/api/admin-transfers/${data.incomingTransfer.id}`, { method: 'DELETE' });
+		await invalidateAll();
+	}
+
 	async function signOut() {
 		await fetch('/api/auth/sign-out', {
 			method: 'POST',
@@ -114,6 +120,13 @@
 	{/if}
 </nav>
 
+{#if data.incomingTransfer}
+	<div class="transfer-banner" role="status">
+		<span><strong>{data.incomingTransfer.from}</strong> wants to hand you the admin role. Open the link in the email we sent you to accept; it expires {new Date(data.incomingTransfer.expiresAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}.</span>
+		<button class="btn btn-ghost" onclick={declineTransfer}>Decline</button>
+	</div>
+{/if}
+
 {@render children()}
 
 <svelte:window onkeydown={onAccountKey} />
@@ -124,6 +137,11 @@
 	.logo { text-decoration: none; }
 	.admin-links { display: flex; gap: var(--sp-4); }
 	.account { position: relative; }
+	.transfer-banner {
+		display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap;
+		padding: var(--sp-2) var(--sp-6); background: var(--secondary-subtle); color: var(--secondary-foreground);
+		border-bottom: 1px solid var(--border); font-size: 13px;
+	}
 	.role-tag { margin-left: var(--sp-2); font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: var(--primary-subtle); color: var(--primary-subtle-foreground); }
 	.account-menu {
 		position: absolute; right: 0; top: calc(100% + 6px); z-index: 800; width: 280px;

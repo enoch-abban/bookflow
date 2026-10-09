@@ -8,6 +8,7 @@ import { parseBody, requireAdmin } from '#lib/server/api-auth.ts';
 import { endSessions, renameUser } from '#lib/server/accounts.ts';
 import { parseOr400, updatePersonSchema } from '#lib/server/validation.ts';
 import { checkPersonChange, notifyRoleChange } from '#lib/server/system-roles.ts';
+import { voidStaleTransfers } from '#lib/server/admin-transfer.ts';
 
 // PATCH /api/people/:id { displayName?, active?, systemRole? } — rename, deactivate, reactivate,
 // or change someone's app-wide role. Admins and managers may call it; checkPersonChange holds
@@ -43,6 +44,8 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 		if (body.displayName !== undefined) await renameUser(person.userId, body.displayName);
 		if (body.active === false) await endSessions(person.userId);
 	}
+	// A deactivation or role change can void a pending admin transfer (spec: Voided).
+	if (roleChanged || body.active === false) await voidStaleTransfers();
 	if (roleChanged) await notifyRoleChange(person, before.systemRole, person.systemRole, actor.personRow.displayName);
 	return json({ person });
 };

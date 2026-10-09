@@ -49,6 +49,31 @@
 		field = mode === 'invite' ? (p.invite?.email ?? p.email ?? '') : mode === 'rename' ? p.displayName : '';
 	}
 
+	// Transfer the admin role (spec: Transferring the admin role): pick someone and what you
+	// become, get a fresh code by email, then confirm with your password and the code.
+	let transferOpen = $state(false);
+	let tf = $state({ toPersonId: '', senderNewRole: 'manager' as 'manager' | 'member', password: '', code: '' });
+	let codeSent = $state(false);
+	async function sendCode() {
+		busy = true;
+		const res = await fetch('/api/admin-transfers/code', { method: 'POST' });
+		busy = false;
+		const body = await res.json().catch(() => ({}));
+		codeSent = res.ok;
+		flash = res.ok ? { ok: true, text: 'We emailed you a 6-digit code. It expires in 10 minutes.' } : { ok: false, text: body.message ?? 'The code could not be sent.' };
+	}
+	async function startTransfer(e: SubmitEvent) {
+		e.preventDefault();
+		const name = data.transferTo.find((x) => x.id === tf.toPersonId)?.name ?? 'them';
+		if (await call('POST', '/api/admin-transfers', tf, `Transfer sent. ${name} has been emailed a link; nothing changes until they accept.`)) {
+			tf = { toPersonId: '', senderNewRole: 'manager', password: '', code: '' };
+			codeSent = false;
+			transferOpen = false;
+		} else {
+			tf.code = '';
+		}
+	}
+
 	async function call(method: string, url: string, body: unknown, okText: string) {
 		busy = true;
 		flash = null;
@@ -120,6 +145,55 @@
 
 	{#if flash}
 		<p class="notice" class:notice--ok={flash.ok} class:notice--error={!flash.ok} role="status">{flash.text}</p>
+	{/if}
+
+	{#if data.iAmAdmin}
+		<section class="transfer card">
+			{#if data.outgoing}
+				<div class="transfer-head">
+					<div>
+						<h2>Admin role transfer waiting</h2>
+						<p class="muted">You offered the admin role to <strong>{data.outgoing.to}</strong>; you will become {data.outgoing.senderNewRole === 'manager' ? 'Manager' : 'Member'} when they accept. The link expires {fmtDate(data.outgoing.expiresAt)}.</p>
+					</div>
+					<button class="btn btn-danger" disabled={busy} onclick={() => call('DELETE', `/api/admin-transfers/${data.outgoing!.id}`, undefined, 'Transfer cancelled. Nothing changed.')}>Cancel transfer</button>
+				</div>
+			{:else if !transferOpen}
+				<div class="transfer-head">
+					<div>
+						<h2>Transfer admin role</h2>
+						<p class="muted">Hand your admin role to someone else, for example when you move on. It only happens when they accept.</p>
+					</div>
+					<button class="btn btn-ghost" onclick={() => (transferOpen = true)} disabled={!data.transferTo.length}>Transfer admin role</button>
+				</div>
+				{#if !data.transferTo.length}<p class="muted">Nobody can receive it yet: they need an active account that is not already an admin.</p>{/if}
+			{:else}
+				<h2>Transfer admin role</h2>
+				<form class="transfer-form" onsubmit={startTransfer}>
+					<label class="field">
+						<span>New admin</span>
+						<select class="input" bind:value={tf.toPersonId} required>
+							<option value="">Choose a person…</option>
+							{#each data.transferTo as x (x.id)}<option value={x.id}>{x.name}</option>{/each}
+						</select>
+					</label>
+					<fieldset class="field">
+						<legend>You become</legend>
+						<label class="radio"><input type="radio" bind:group={tf.senderNewRole} value="manager" /> Manager <span class="hint">keeps app-wide access, without system roles or holidays</span></label>
+						<label class="radio"><input type="radio" bind:group={tf.senderNewRole} value="member" /> Member <span class="hint">only the series roles you hold</span></label>
+					</fieldset>
+					<p class="muted">This is the most powerful change in the app, so confirm it with your password and a fresh code.</p>
+					<div class="confirm-row">
+						<label class="field"><span>Your password</span><input class="input" type="password" bind:value={tf.password} required autocomplete="current-password" /></label>
+						<label class="field"><span>Code from your email</span><input class="input input--code" inputmode="numeric" maxlength="6" bind:value={tf.code} required placeholder="000000" /></label>
+						<button type="button" class="btn btn-ghost btn-lg" disabled={busy} onclick={sendCode}>{codeSent ? 'Send a new code' : 'Email me a code'}</button>
+					</div>
+					<div class="row">
+						<button class="btn btn-primary btn-lg" disabled={busy || !tf.toPersonId || !tf.password || tf.code.length !== 6}>Send transfer</button>
+						<button type="button" class="btn btn-ghost btn-lg" onclick={() => { transferOpen = false; codeSent = false; }}>Cancel</button>
+					</div>
+				</form>
+			{/if}
+		</section>
 	{/if}
 
 	<div class="filters" role="tablist">
@@ -290,4 +364,15 @@
 	.status[data-status='deactivated'] { background: var(--danger-subtle); color: var(--danger); }
 
 	.actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--sp-2); }
+	.transfer { border: 1px solid var(--border); border-radius: var(--radius); padding: var(--sp-4) var(--sp-5); margin-bottom: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-2); }
+	.transfer h2 { font-size: 15px; font-weight: 700; margin: 0; }
+	.transfer-head { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--sp-4); flex-wrap: wrap; }
+	.transfer-form { display: flex; flex-direction: column; gap: var(--sp-3); max-width: 640px; }
+	.transfer-form fieldset { border: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--sp-1); }
+	.transfer-form legend { font-size: 13px; font-weight: 500; margin-bottom: var(--sp-1); }
+	.radio { display: flex; gap: var(--sp-2); align-items: baseline; font-size: 13px; }
+	.confirm-row { display: grid; grid-template-columns: 1fr 160px auto; gap: var(--sp-3); align-items: end; }
+	@media (max-width: 640px) { .confirm-row { grid-template-columns: 1fr; } }
+	.row { display: flex; gap: var(--sp-2); }
+	.muted { margin: 0; }
 </style>

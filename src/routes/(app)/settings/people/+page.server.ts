@@ -4,6 +4,7 @@ import { db } from '#lib/server/db/index.ts';
 import { invites, people, series, seriesMembers } from '#lib/server/db/schema.ts';
 import { requireAdmin } from '#lib/server/api-auth.ts';
 import { inviteState } from '#lib/server/invites.ts';
+import { pendingFor } from '#lib/server/admin-transfer.ts';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	const me = await requireAdmin(locals);
@@ -50,5 +51,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 		};
 	});
 
-	return { people: list, meId: me.personId, iAmAdmin };
+	// Transferring the admin role: an admin's pending transfer, and who could receive one
+	// (active, signed up, not already an admin).
+	const outgoing = iAmAdmin ? (await pendingFor(me.personId)).find((t) => t.mine) ?? null : null;
+	const transferTo = iAmAdmin
+		? rows.filter((p) => p.id !== me.personId && p.active && p.userId && p.systemRole !== 'admin').map((p) => ({ id: p.id, name: p.displayName }))
+		: [];
+	return { people: list, meId: me.personId, iAmAdmin, outgoing, transferTo };
 };

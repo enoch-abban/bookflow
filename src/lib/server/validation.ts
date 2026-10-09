@@ -232,3 +232,10 @@ export const assigneesSchema = z.object({
 	leadId: z.string().min(1).nullable().optional(),
 	version: z.number().int()
 });
+
+export const startTransferSchema = z.object({
+	toPersonId: z.string().min(1, 'Choose who becomes admin.'),
+	senderNewRole: z.enum(['manager', 'member']).default('manager'),
+	password: z.string().min(1, 'Enter your password.'),
+	code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code from your email.')
+});
