@@ -27,16 +27,32 @@ The Book Production Tracker is a general web app for planning and tracking any m
 
 Permissions come from four system roles, held per series. What someone does on a series (EdTech, reviewer, designer, Production Unit) is a team label plus the tasks assigned to them, so any series can define its own teams without code changes. eSTEAM L2 has roughly 12 to 15 people; its external binder is tracked as a vendor, not a user.
 
-| System role | Can do | eSTEAM L2 example |
+| Role | Can do | eSTEAM L2 example |
 | --- | --- | --- |
-| Admin | Everything across all series: create series and templates, manage people, holidays and settings | Plan owner |
-| Coordinator | On their series: edit the schedule (drag, resize, reassign, link), set the series' target date and hard limit, edit windows, tracks and stages, approve for print, plus everything a contributor can do | Project manager (named by admin later) |
-| Contributor | Update status, notes and feedback links on their own tasks; approve or return work on review tasks assigned to them; update print records on printing and binding tasks assigned to them | EdTechs, reviewers, designers, Production Unit |
-| Viewer | Read and comment only | Management |
+| Admin (app-wide) | Everything across all series, including granting and removing the admin and manager roles, deactivating anyone, and app-wide settings such as holidays | Plan owner |
+| Manager (app-wide) | Everything an admin can do, except granting or removing the admin and manager roles, deactivating admins, and changing holidays; acts as coordinator on every series | None yet |
+| Coordinator (per series) | On their series: set the target date and hard limit, edit the schedule (drag, resize, reassign, link), edit windows, tracks and stages, approve for print, plus everything a contributor can do | Project manager (named by admin later) |
+| Contributor (per series) | Update status, notes and feedback links on their own tasks; approve or return work on review tasks assigned to them; update print records on printing and binding tasks assigned to them | EdTechs, reviewers, designers, Production Unit |
+| Viewer (per series) | Read and comment only | Management |
 
-Roles are held per series, so a designer can be a coordinator on one series and a contributor on another.
+Admin and manager are app-wide roles held on the person. Coordinator, contributor and viewer are held per series, so a designer can be a coordinator on one series and a contributor on another. Wherever this spec lists Admin for an action, managers can do it too, except where it concerns system roles, deactivating admins or holidays.
 
 Every logged-in user can comment on any task. Permission checks run on the server for every action; the UI hides controls a role cannot use but never relies on that alone.
+
+### Granting admin and manager
+
+On the People page, admins see a role menu on each person: Admin, Manager or Member. Choosing a new role opens a confirmation dialog that names the person and what the role allows, and the person is emailed about the change. Only admins can grant or remove the admin and manager roles. The app always keeps at least one active admin, so the last admin cannot step down or be deactivated (409); an admin can step down once another active admin exists. A role change takes effect on the person's next request without signing them out, and every change is recorded in the activity log. Series roles are set separately in each series' member settings.
+
+### Transferring the admin role
+
+An admin can hand their role to someone else in one step, for example when the plan owner moves on. The swap happens only when the recipient accepts, so a typo or a wrong name never leaves the app with the wrong admin.
+
+1. **Start.** On the People page, the admin chooses Transfer admin role, picks an active person who has already accepted their invite, and chooses what they become afterwards: Manager (the default) or Member. Because this is the most powerful change in the app, they confirm with their password and a fresh emailed code.
+2. **Pending.** The recipient gets an email with a link valid for 7 days, and sees a banner the next time they sign in. Nothing changes until they accept. The sender can cancel at any time, the recipient can decline, and an admin can have only one transfer pending.
+3. **Accept.** The recipient signs in and accepts on `/admin-transfer/[token]`. In one transaction they become admin and the sender takes the role they chose, so the app is never without an admin, even for a moment. Both are emailed, and the swap is recorded in the activity log.
+4. **Voided.** A pending transfer is cancelled automatically if it expires, if either person is deactivated, or if the sender stops being an admin before it is accepted.
+
+Series roles are untouched by a transfer; the new admin already has full access as admin, and the former admin keeps any coordinator or contributor roles they held.
 
 ### Accounts and sign-in
 
@@ -115,7 +131,7 @@ The app has five main views. The status matrix is the home screen; the swimlane 
 
 ### Status matrix (home)
 
-A grid with one row per book (13 for eSTEAM L2, grouped by batch) and one column per stage. Each cell shows the task's status as a coloured chip, its lead assignee's initials and its planned end date. Review cells also carry a badge with reviews done and pending, and printing and binding cells show copies against plan, for example "12 of 22". Empty cells mean the stage does not apply. A header strip shows today's date, the projected final binding date against the series target date and hard limit, and counts of late and at-risk tasks. Clicking a cell opens the task drawer. Filters: grade group, batch, person, status.
+A grid with one row per book (13 for eSTEAM L2, grouped by batch) and one column per stage. Each cell shows the task's status as a coloured chip, its lead assignee's initials and its planned end date. Review cells also carry a badge with reviews done and pending, and printing and binding cells show copies against plan, for example "12 of 22". Empty cells mean the stage does not apply. A header strip shows today's date, the projected final binding date against the series target date and hard limit, and counts of late and at-risk tasks. Clicking a cell opens the task drawer. Filters: book group, batch, person (including Unassigned), status. Cells for unassigned tasks show "Unassigned" in place of initials, and the header strip counts unassigned tasks due to start within the next five working days.
 
 ### Swimlane editor
 
@@ -135,7 +151,7 @@ One page per book: its ISBN and edition, its pipeline as a horizontal stepper, a
 
 ### Task drawer
 
-Opens from any view. Fields: title, book, stage, assignees (lead marked), planned start and end, duration in working days, status, iteration, Google Drive feedback link, notes, predecessors and successors, comments and activity. Coordinators can edit everything, including an Allow overflow switch when the series enforces windows; assignees can change status and add notes.
+Opens from any view: clicking a matrix cell, a swimlane bar, a My tasks row or a task on the book page. Fields: title, book, stage, assignees (lead marked), planned start and end, duration in working days, status, iteration, Google Drive feedback link, notes, predecessors and successors, comments and activity. Coordinators can edit everything, including an Allow overflow switch when the series enforces windows; assignees can change status and add notes. Assignees are edited with a picker that lists the series' members grouped by team label, each showing their workload over the task's dates. One assignee is marked lead with a star: the first person added becomes lead by default, and removing the lead promotes the next one. Saving calls the assignees endpoint, and the task appears in each person's My tasks on their next refresh.
 
 ### Review loop
 
@@ -176,7 +192,7 @@ Every bar on the swimlane can be dragged, resized, reassigned and edited in plac
 
 - **Time axis.** Working days from the series start to two weeks past the target, with weekends drawn as narrow grey columns. Zoom levels: day (default) and week. The toolbar above the axis holds the zoom, the lane grouping toggle, the Critical path toggle and, while strict mode is on, a Strict badge. A vertical line marks today; a dashed line marks the series target date.
 - **Windows.** The Rev 5 windows appear as labelled bands across the top and as faint dividers down the grid. When the series enforces them, as eSTEAM L2 does, every task belongs to the window it starts in and cannot cross its edge unless the coordinator has allowed it to overflow. The overflowing part of a bar is drawn at 60% opacity past a dashed window edge, with a badge such as "+1d".
-- **Lanes.** Two groupings, switched with a toggle. By person groups lanes by the series' team labels; for eSTEAM L2 that reproduces Rev 5, with one lane per EdTech, reviewer, designer and the Production Unit. By book shows one lane per book with its whole pipeline left to right. Lanes collapse into their role or batch.
+- **Lanes.** Two groupings, switched with a toggle. By person groups lanes by the series' team labels; for eSTEAM L2 that reproduces Rev 5, with one lane per EdTech, reviewer, designer and the Production Unit. An Unassigned lane at the top holds tasks with no assignee, so they are never invisible. By book shows one lane per book with its whole pipeline left to right. Lanes collapse into their role or batch.
 - **Bars.** Fill colour shows stage category; the label shows stage and book ("InDesign · G8"). Status shows as fill style: outline for Not started, solid for In progress, striped for In review, a dashed border with a return-arrow icon for Returned, a check icon and reduced opacity for Done, a danger border for Late or Blocked. An iteration badge ("×2") appears after the first return. The print gate is a diamond.
 - **Dependencies.** Thin arrows from a bar's end to its successor's start. An arrow turns danger-coloured when a successor starts before its predecessor ends.
 
@@ -186,7 +202,7 @@ Every bar on the swimlane can be dragged, resized, reassigned and edited in plac
 | --- | --- | --- | --- |
 | Move | Drag bar horizontally | Arrow left or right moves one working day | Bar moves within its window, or into another window when dropped there, snapping to working days; it cannot straddle a window edge beyond its overflow allowance; successors preview as ghost bars |
 | Resize | Drag left or right edge | Shift plus arrow | Changes start or duration up to the window's edge, or into the next window up to the overflow allowance for a task allowed to overflow. Pulling an ordinary task past the edge asks the coordinator whether to allow overflow for it. Minimum one working day |
-| Reassign | Drag bar vertically into another lane (person grouping only) | Open popover, change assignee | Lead assignee changes; workload updates live |
+| Reassign | Drag bar vertically into another lane (person grouping only) | Open popover, change assignee | The person whose lane the bar left is swapped for the person whose lane it lands in, keeping lead status; dragging out of the Unassigned lane assigns the task, dropping into it removes all assignees; workload updates live |
 | Edit | Double-click bar | Enter | Inline popover: title, assignees, dates, status, notes, link to full drawer |
 | Create | Drag across empty lane space | N, then fill popover | New task; coordinator picks book and stage |
 | Link | Drag from the bar's end handle onto another bar | Popover, add predecessor | New finish-to-start dependency |
@@ -508,12 +524,13 @@ src/
     invite/[token]/+page.svelte
     reset-password/+page.svelte
     reset-password/[token]/+page.svelte
+    admin-transfer/[token]/+page.svelte
 drizzle/          migrations
 ```
 
 ## Database schema
 
-Twenty-three tables hold the plan, its history and its people; auth tables are generated by Better Auth and linked to `people` through `user_id`. Dates are ISO text, IDs are ULID text, and every mutable task row carries a `version` for optimistic locking.
+Twenty-four tables hold the plan, its history and its people; auth tables are generated by Better Auth and linked to `people` through `user_id`. Dates are ISO text, IDs are ULID text, and every mutable task row carries a `version` for optimistic locking.
 
 ```sql
 -- Series, templates and pipeline definition --------------------------
@@ -616,7 +633,8 @@ CREATE TABLE people (
   user_id       TEXT UNIQUE,                -- null until the invite is accepted
   display_name  TEXT NOT NULL,              -- 'EdTech 1' until renamed
   email         TEXT UNIQUE,
-  is_admin      INTEGER NOT NULL DEFAULT 0,
+  system_role   TEXT NOT NULL DEFAULT 'member'
+                CHECK (system_role IN ('admin','manager','member')),
   active        INTEGER NOT NULL DEFAULT 1
 );
 
@@ -640,6 +658,21 @@ CREATE TABLE invites (
   accepted_at   TEXT,
   revoked_at    TEXT
 );
+
+CREATE TABLE admin_transfers (
+  id              TEXT PRIMARY KEY,
+  from_person_id  TEXT NOT NULL REFERENCES people(id),
+  to_person_id    TEXT NOT NULL REFERENCES people(id),
+  sender_new_role TEXT NOT NULL DEFAULT 'manager'
+                  CHECK (sender_new_role IN ('manager','member')),
+  token_hash      TEXT NOT NULL UNIQUE,     -- only the hash is stored
+  created_at      TEXT NOT NULL,
+  expires_at      TEXT NOT NULL,            -- created_at + 7 days
+  accepted_at     TEXT,
+  cancelled_at    TEXT,                     -- cancelled, declined or voided
+  CHECK (from_person_id <> to_person_id)
+);
+-- at most one pending transfer per sender (server-checked)
 
 -- Calendar --------------------------------------------------------------
 
@@ -774,7 +807,7 @@ CREATE TABLE activity_log (
   actor_id      TEXT REFERENCES people(id),
   entity        TEXT NOT NULL CHECK (entity IN (
                   'series','template','track','stage','stage_link','skip','book','task','dependency',
-                  'window','holiday','member','person','invite','review',
+                  'window','holiday','member','person','invite','admin_transfer','review',
                   'approval','print_record','comment','baseline')),
   entity_id     TEXT NOT NULL,
   action        TEXT NOT NULL,              -- 'create', 'update', 'delete', 'move', 'resize',
@@ -822,6 +855,7 @@ Pages load their data through SvelteKit load functions; every write goes through
 | `/login` | Sign-in with password and emailed code | Public |
 | `/invite/[token]` | Accept an invite: set name and password, verify email | Public, valid token |
 | `/reset-password`, `/reset-password/[token]` | Request a reset link; set a new password | Public, valid token for the second |
+| `/admin-transfer/[token]` | Accept or decline an admin role transfer | The named recipient, signed in |
 
 ### Write endpoints
 
@@ -833,7 +867,7 @@ Pages load their data through SvelteKit load functions; every write goes through
 | `DELETE /api/invites/:id` | none | Invite revoked | Admin, the inviter |
 | `POST /api/invites/accept` | `{ token, displayName, password }` | Account created and linked to the person; verification code sent | Public, valid token |
 | `POST /api/people/:id/password-reset` | none | Reset link emailed to that person | Admin |
-| `PATCH /api/people/:id` | Any of `displayName, active` | Updated person; deactivation ends their sessions | Admin |
+| `PATCH /api/people/:id` | Any of `displayName, active`, systemRole | Updated person; deactivation ends their sessions; a systemRole change or deactivation that would leave no active admin is refused with 409 | Admin |
 | `POST /api/series` | `{ name, startDate, targetDate, hardLimitDate?, templateId? }` | New series with tracks, stages, team labels and settings copied from the template | Admin |
 | `PATCH /api/series/:id` | Any of `name, targetDate, hardLimitDate, status, bookGroupLabel, enforceWindows, strictMode, defaultCopies, legalDepositCopies, printBufferDays`, windowOverflowDays, preview? | Updated series; existing print records are unchanged. When the change lowers windowOverflowDays or turns enforceWindows on, also the refit report, saved with the series change as one undoable batch; with preview set, the report only | Admin, coordinator |
 | `POST /api/series/:id/print-defaults/apply` | `{ fields: ["copiesPlanned", "depositCopies"] }` | Print records updated to the series defaults for every book whose printing has not started, plus the books skipped; one batch id | Admin, coordinator |
@@ -859,6 +893,9 @@ Pages load their data through SvelteKit load functions; every write goes through
 | `POST /api/redo` | `{ batchId }` | Reapplied changes as a new batch | Whoever undid that batch |
 | `POST /api/series/:id/baselines` | `{ name }` | Baseline | Admin, coordinator |
 | `GET /api/series/:id/changes?since=<cursor>` | none | Everything changed in that series since the cursor, plus the new cursor | Series members |
+| `POST /api/admin-transfers` | `{ toPersonId, senderNewRole, password, code }` | Pending transfer, recipient emailed; 409 if one is already pending or the recipient has no account | Admin |
+| `POST /api/admin-transfers/accept` | `{ token }` | Both people's new roles, swapped in one transaction; 410 if expired or voided | The named recipient |
+| `DELETE /api/admin-transfers/:id` | none | Transfer cancelled by the sender or declined by the recipient | Sender or recipient |
 
 A stale `version` returns HTTP 409 with the current task so the client can snap back. A permission failure returns 403. Validation uses Zod schemas shared between client and server.
 
@@ -929,7 +966,7 @@ The build is split so the status matrix and my tasks are live by 14 October, a w
 
 &#91;embedded content: MVP delivery roadmap · 5 phases, 4 gates\]
 
-In text: Spec, 5 to 7 October, ending with the spec signed on 7 October; Foundation, 8 to 14 October, ending with go-live on 14 October; Swimlane, 15 to 23 October, ending with the editor live on 23 October; Workflow, 26 to 30 October, ending with the MVP complete on 30 October; then run support with fixes only from 2 November to 15 December, and phase 2 after the run.
+In text: Spec, 5 to 7 October, ending with the spec signed on 7 October; Foundation, 8 to 14 October (schema, seed, sign-in, status matrix, task drawer with assignment, My tasks), ending with go-live on 14 October; Swimlane, 15 to 23 October, ending with the editor live on 23 October; Workflow, 26 to 30 October, ending with the MVP complete on 30 October; then run support with fixes only from 2 November to 15 December, and phase 2 after the run.
 
 Durations assume one developer working full time with AI-assisted coding, and include the general series model, which adds about a day to Foundation; the new-series wizard waits for phase 2. With less time, move the workload view and baselines out of the Workflow phase rather than delaying go-live, because a tracker that arrives after batch 2 prints has missed most of its value for this run.
 
