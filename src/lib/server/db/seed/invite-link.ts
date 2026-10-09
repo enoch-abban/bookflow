@@ -71,5 +71,5 @@ await db.transaction(async (tx) => {
 });
 
 const origin = process.env.ORIGIN || 'http://localhost:5173';
-console.log(`Invite for ${person.displayName}${person.isAdmin ? ' (admin)' : ''} <${email}>, valid 7 days:`);
+console.log(`Invite for ${person.displayName}${person.systemRole !== 'member' ? ` (${person.systemRole})` : ''} <${email}>, valid 7 days:`);
 console.log(`${origin}/invite/${token}`);

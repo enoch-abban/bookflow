@@ -141,7 +141,9 @@ export const people = sqliteTable('people', {
 	userId: text('user_id').unique(), // null until invite accepted
 	displayName: text('display_name').notNull(),
 	email: text('email').unique(),
-	isAdmin: integer('is_admin').notNull().default(0),
+	// App-wide role (spec: Users, roles and permissions). Managers can do what admins can, except
+	// change system roles, change holidays, or edit another admin's or manager's account.
+	systemRole: text('system_role', { enum: ['admin', 'manager', 'member'] }).notNull().default('member'),
 	active: integer('active').notNull().default(1),
 	tourDoneAt: text('tour_done_at') // set when they finish or skip the guided tour; it starts once until then
 });

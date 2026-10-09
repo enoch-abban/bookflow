@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { LayoutProps } from './$types';
-	import { goto } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import Tour from '#lib/components/Tour.svelte';
@@ -35,6 +35,29 @@
 	}
 	const cur = (href: string) => (isCurrent(href) ? 'page' : undefined);
 
+	// Account menu (spec: everyone can change their own display name, whatever their role).
+	let accountOpen = $state(false);
+	let myName = $state('');
+	let nameMsg = $state<{ ok: boolean; text: string } | null>(null);
+	let savingName = $state(false);
+	function toggleAccount() {
+		accountOpen = !accountOpen;
+		myName = data.me?.displayName ?? '';
+		nameMsg = null;
+	}
+	async function saveName(e: SubmitEvent) {
+		e.preventDefault();
+		savingName = true;
+		const res = await fetch('/api/me', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ displayName: myName.trim() }) });
+		savingName = false;
+		const body = await res.json().catch(() => ({}));
+		nameMsg = res.ok ? { ok: true, text: 'Name saved.' } : { ok: false, text: body.message ?? 'That name could not be saved.' };
+		if (res.ok) await invalidateAll();
+	}
+	function onAccountKey(e: KeyboardEvent) {
+		if (e.key === 'Escape' && accountOpen) accountOpen = false;
+	}
+
 	async function signOut() {
 		await fetch('/api/auth/sign-out', {
 			method: 'POST',
@@ -61,12 +84,31 @@
 		{/if}
 		<a href="/me" aria-current={cur('/me')}>My tasks</a>
 		{#if data.seriesId && data.canManageSeries}<a href="/s/{data.seriesId}/baselines" aria-current={cur(`/s/${data.seriesId}/baselines`)}>Baselines</a><a href="/s/{data.seriesId}/activity" aria-current={cur(`/s/${data.seriesId}/activity`)}>Activity</a><a href="/s/{data.seriesId}/settings" aria-current={cur(`/s/${data.seriesId}/settings`)}>Settings</a>{/if}
-		{#if data.isAdmin}<span class="admin-links" data-tour="admin-links"><a href="/templates" aria-current={cur('/templates')}>Templates</a><a href="/settings/people" aria-current={cur('/settings/people')}>People</a><a href="/settings/calendar" aria-current={cur('/settings/calendar')}>Calendar</a></span>{/if}
+		{#if data.isAdmin}<span class="admin-links" data-tour="admin-links"><a href="/templates" aria-current={cur('/templates')}>Templates</a><a href="/settings/people" aria-current={cur('/settings/people')}>People</a>{#if data.systemRole === 'admin'}<a href="/settings/calendar" aria-current={cur('/settings/calendar')}>Calendar</a>{/if}</span>{/if}
 	</div>
 	{#if data.user}
 		<div class="nav-user">
 			<button class="btn btn-ghost" data-tour="tour-button" onclick={() => (touring = true)} title="A short walk through the app">Tour</button>
-			<span>{data.user.name}</span>
+			<div class="account">
+				<button class="btn btn-ghost" onclick={toggleAccount} aria-expanded={accountOpen} aria-haspopup="true">
+					{data.me?.displayName ?? data.user.name}{#if data.systemRole !== 'member'}<span class="role-tag">{data.systemRole === 'admin' ? 'Admin' : 'Manager'}</span>{/if}
+				</button>
+				{#if accountOpen}
+					<form class="account-menu" onsubmit={saveName}>
+						<label class="field">
+							<span>Your display name</span>
+							<!-- svelte-ignore a11y_autofocus -->
+							<input class="input" bind:value={myName} maxlength="80" required autofocus />
+						</label>
+						<p class="hint">How you appear on tasks, comments and the activity log.</p>
+						{#if nameMsg}<p class="notice" class:notice--ok={nameMsg.ok} class:notice--error={!nameMsg.ok} role="status">{nameMsg.text}</p>{/if}
+						<div class="row">
+							<button class="btn btn-primary" disabled={savingName || !myName.trim()}>Save</button>
+							<button type="button" class="btn btn-ghost" onclick={() => (accountOpen = false)}>Close</button>
+						</div>
+					</form>
+				{/if}
+			</div>
 			<button class="btn btn-ghost" onclick={signOut}>Sign out</button>
 		</div>
 	{/if}
@@ -74,12 +116,23 @@
 
 {@render children()}
 
+<svelte:window onkeydown={onAccountKey} />
 <TaskDrawer />
 <Tour steps={tourSteps} ctx={tourCtx} bind:open={touring} onend={endTour} />
 
 <style>
 	.logo { text-decoration: none; }
 	.admin-links { display: flex; gap: var(--sp-4); }
+	.account { position: relative; }
+	.role-tag { margin-left: var(--sp-2); font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: var(--primary-subtle); color: var(--primary-subtle-foreground); }
+	.account-menu {
+		position: absolute; right: 0; top: calc(100% + 6px); z-index: 800; width: 280px;
+		background: var(--background); border: 1px solid var(--border); border-radius: var(--radius);
+		box-shadow: 0 8px 24px rgba(15, 23, 42, 0.15); padding: var(--sp-3) var(--sp-4);
+		display: flex; flex-direction: column; gap: var(--sp-2); color: var(--foreground);
+	}
+	.account-menu .hint { font-size: 12px; color: var(--muted-foreground); margin: 0; }
+	.account-menu .row { display: flex; gap: var(--sp-2); }
 	.series-switch {
 		font: inherit; font-size: 13px; font-weight: 600;
 		border: 1px solid var(--border); border-radius: var(--radius-sm);

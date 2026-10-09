@@ -13,6 +13,8 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 	const actor = await requireAdmin(locals);
 	const person = await db.select().from(people).where(eq(people.id, params.id)).then((r) => r[0]);
 	if (!person) throw error(404, 'Person not found');
+	// Managers look after members' accounts only (spec: Users, roles and permissions).
+	if (actor.systemRole === 'manager' && person.systemRole !== 'member') throw error(403, 'Only an admin can reset an admin’s or manager’s password.');
 
 	const email = person.userId ? await emailForUser(person.userId) : null;
 	if (!email) throw error(409, 'This person has no account yet. Send an invite instead.');

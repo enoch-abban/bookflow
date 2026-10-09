@@ -1,11 +1,21 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import type { PageProps } from './$types';
+	import { ROLE_LABEL, ROLE_SUMMARY, type SystemRole } from '#lib/roles.ts';
 
 	let { data }: PageProps = $props();
 
 	type Person = (typeof data.people)[number];
-	type Mode = 'invite' | 'rename' | 'deactivate';
+	type Mode = 'invite' | 'rename' | 'deactivate' | 'role';
+	const ROLES: SystemRole[] = ['admin', 'manager', 'member'];
+	// The role chosen in a person's menu, waiting for confirmation.
+	let pendingRole = $state<SystemRole | null>(null);
+
+	function chooseRole(p: Person, role: SystemRole) {
+		if (role === p.systemRole) return;
+		pendingRole = role;
+		open = { id: p.id, mode: 'role' };
+	}
 
 	const STATUS_LABEL: Record<string, string> = {
 		active: 'Active',
@@ -79,6 +89,12 @@
 			call('PATCH', `/api/people/${p.id}`, { displayName: field.trim() }, 'Name updated.');
 		else if (open?.mode === 'deactivate')
 			call('PATCH', `/api/people/${p.id}`, { active: false }, `${p.displayName} was deactivated and signed out.`);
+		else if (open?.mode === 'role' && pendingRole) {
+			const role = pendingRole;
+			call('PATCH', `/api/people/${p.id}`, { systemRole: role }, p.id === data.meId
+				? `You are now ${role === 'admin' ? 'an' : 'a'} ${ROLE_LABEL[role]}.`
+				: `${p.displayName} is now ${role === 'admin' ? 'an' : 'a'} ${ROLE_LABEL[role]}${p.hasAccount ? ' and has been emailed about it' : ''}.`);
+		}
 	}
 </script>
 
@@ -117,7 +133,7 @@
 	<div class="table-wrap">
 		<table>
 			<thead>
-				<tr><th>Name</th><th>Series and role</th><th>Status</th><th class="right">Actions</th></tr>
+				<tr><th>Name</th><th>App role</th><th>Series and role</th><th>Status</th><th class="right">Actions</th></tr>
 			</thead>
 			<tbody>
 				{#each shown as p (p.id)}
@@ -125,10 +141,22 @@
 						<td>
 							<div class="name">
 								{p.displayName}
-								{#if p.isAdmin}<span class="tag">Admin</span>{/if}
 								{#if p.id === data.meId}<span class="tag tag--me">You</span>{/if}
 							</div>
 							<div class="muted">{p.invite?.email ?? p.email ?? 'No email'}</div>
+						</td>
+						<td>
+							{#if p.canChangeRole}
+								<select class="input role-select" aria-label="App role for {p.displayName}" value={p.systemRole}
+									onchange={(e) => { chooseRole(p, e.currentTarget.value as SystemRole); e.currentTarget.value = p.systemRole; }}>
+									{#each ROLES as r (r)}
+										<option value={r}>{ROLE_LABEL[r]}</option>
+									{/each}
+								</select>
+							{:else}
+								<span class="tag" class:tag--plain={p.systemRole === 'member'}>{ROLE_LABEL[p.systemRole]}</span>
+								{#if p.roleNote}<div class="muted">{p.roleNote}</div>{/if}
+							{/if}
 						</td>
 						<td>
 							{#each p.memberships as m (m.seriesName)}
@@ -144,7 +172,9 @@
 						</td>
 						<td class="right">
 							<div class="actions">
-								{#if p.status === 'deactivated'}
+								{#if !p.canEdit}
+									<span class="muted">{p.id === data.meId ? 'Rename yourself from the account menu' : 'Admins only'}</span>
+								{:else if p.status === 'deactivated'}
 									<button class="btn btn-ghost" disabled={busy}
 										onclick={() => call('PATCH', `/api/people/${p.id}`, { active: true }, `${p.displayName} was reactivated.`)}>Reactivate</button>
 								{:else}
@@ -160,7 +190,7 @@
 											onclick={() => call('POST', `/api/people/${p.id}/password-reset`, undefined, `Reset link sent to ${p.displayName}.`)}>Send reset link</button>
 									{/if}
 									<button class="btn btn-ghost" onclick={() => toggle(p, 'rename')}>Rename</button>
-									{#if p.id !== data.meId}
+									{#if p.canDeactivate}
 										<button class="btn btn-danger" onclick={() => toggle(p, 'deactivate')}>Deactivate</button>
 									{/if}
 								{/if}
@@ -169,7 +199,7 @@
 					</tr>
 					{#if open?.id === p.id}
 						<tr class="expand">
-							<td colspan="4">
+							<td colspan="5">
 								<form class="inline-form" onsubmit={(e) => submitRow(e, p)}>
 									{#if open.mode === 'invite'}
 										<label class="field grow">
@@ -186,6 +216,19 @@
 											<input class="input" bind:value={field} maxlength="80" required autofocus />
 										</label>
 										<button class="btn btn-primary btn-lg" disabled={busy || !field.trim()}>Save</button>
+									{:else if open.mode === 'role' && pendingRole}
+										<div class="note grow" role="alertdialog" aria-labelledby="role-q-{p.id}">
+											<p id="role-q-{p.id}">
+												{#if p.id === data.meId}Step down from Admin to <strong>{ROLE_LABEL[pendingRole]}</strong>?
+												{:else}Make <strong>{p.displayName}</strong> {pendingRole === 'admin' ? 'an' : 'a'} <strong>{ROLE_LABEL[pendingRole]}</strong> (now {ROLE_LABEL[p.systemRole]})?{/if}
+											</p>
+											<p class="muted">{ROLE_LABEL[pendingRole]}: {ROLE_SUMMARY[pendingRole]}</p>
+											<p class="muted">
+												{#if p.id === data.meId}You'll lose admin rights on your next page load.
+												{:else}It applies on their next page load without signing them out{p.hasAccount ? ', and they will be emailed about it' : ''}.{/if}
+											</p>
+										</div>
+										<button class="btn btn-primary btn-lg" disabled={busy}>Change role</button>
 									{:else}
 										<p class="note grow">
 											Deactivate <strong>{p.displayName}</strong>? They'll be signed out and can't sign in.
@@ -193,7 +236,7 @@
 										</p>
 										<button class="btn btn-danger btn-lg" disabled={busy}>Deactivate</button>
 									{/if}
-									<button type="button" class="btn btn-ghost btn-lg" onclick={() => (open = null)}>Cancel</button>
+									<button type="button" class="btn btn-ghost btn-lg" onclick={() => { open = null; pendingRole = null; }}>Cancel</button>
 								</form>
 							</td>
 						</tr>
@@ -237,6 +280,8 @@
 
 	.tag { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px; background: var(--primary-subtle); color: var(--primary-subtle-foreground); }
 	.tag--me { background: var(--muted); color: var(--muted-foreground); }
+	.tag--plain { background: var(--muted); color: var(--muted-foreground); }
+	.role-select { min-width: 120px; padding-top: 4px; padding-bottom: 4px; font-size: 13px; }
 
 	.status { font-size: 12px; font-weight: 500; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
 	.status[data-status='active'] { background: var(--success-subtle); color: var(--success); }

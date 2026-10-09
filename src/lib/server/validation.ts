@@ -25,8 +25,10 @@ export const createPersonSchema = z.object({
 });
 
 export const updatePersonSchema = z
-	.object({ displayName: displayName.optional(), active: z.boolean().optional() })
-	.refine((b) => b.displayName !== undefined || b.active !== undefined, 'Nothing to update.');
+	.object({ displayName: displayName.optional(), active: z.boolean().optional(), systemRole: z.enum(['admin', 'manager', 'member']).optional() })
+	.refine((b) => b.displayName !== undefined || b.active !== undefined || b.systemRole !== undefined, 'Nothing to update.');
+
+export const updateMeSchema = z.object({ displayName });
 
 export const inviteSchema = z.object({ email });
 

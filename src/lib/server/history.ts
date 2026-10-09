@@ -43,12 +43,13 @@ export async function reversals(batchIds: string[]) {
  * last 50 batches on the series, passed in so a page can check many batches with one query.
  */
 export function undoRefusal(
-	batch: { batchId: string; actorId: string | null; kind: ReturnType<typeof batchKind>; reversed: boolean },
-	viewer: { personId: string; isAdmin: boolean },
+	batch: { batchId: string; actorId: string | null; kind: ReturnType<typeof batchKind>; reversed: boolean; holidays?: boolean },
+	viewer: { personId: string; isAdmin: boolean; systemRole?: string },
 	recent: string[],
 ): string | null {
 	if (batch.reversed) return 'This change has already been undone.';
 	if (batch.kind === 'undo') return 'This is an undo; use Redo to reapply the change.';
+	if (batch.holidays && viewer.systemRole !== 'admin') return 'Only an admin can change holidays, so only an admin can undo this.';
 	if (viewer.isAdmin) return null;
 	if (batch.actorId !== viewer.personId) return 'You can only undo your own changes.';
 	if (!recent.includes(batch.batchId)) return `You can undo only your last ${UNDO_LIMIT} changes on this series.`;
@@ -102,7 +103,7 @@ export async function namesFor(seriesId: string | null, entries: LogEntry[]): Pr
  * entries outside a batch (status changes, comments) stand alone. `before` is a cursor: the
  * id of the oldest entry on the previous page.
  */
-export async function feed(opts: { seriesId: string; viewer: { personId: string; isAdmin: boolean }; actorId?: string; before?: string; limit?: number }) {
+export async function feed(opts: { seriesId: string; viewer: { personId: string; isAdmin: boolean; systemRole?: string }; actorId?: string; before?: string; limit?: number }) {
 	const limit = opts.limit ?? 40;
 	const where = and(
 		eq(activityLog.seriesId, opts.seriesId),
@@ -158,7 +159,8 @@ export async function feed(opts: { seriesId: string; viewer: { personId: string;
 		const isBatch = !!first.batchId;
 		const kind = batchKind(entries);
 		const rev = isBatch ? reversed.get(k) : undefined;
-		const refusal = isBatch ? undoRefusal({ batchId: k, actorId: first.actorId, kind, reversed: !!rev }, opts.viewer, recent) : 'Only schedule and pipeline changes can be undone.';
+		const holidays = list.some((r) => r.entity === 'holiday');
+		const refusal = isBatch ? undoRefusal({ batchId: k, actorId: first.actorId, kind, reversed: !!rev, holidays }, opts.viewer, recent) : 'Only schedule and pipeline changes can be undone.';
 		return {
 			key: k,
 			batchId: isBatch ? k : null,
@@ -174,7 +176,7 @@ export async function feed(opts: { seriesId: string; viewer: { personId: string;
 			reverts: first.revertsBatchId,
 			reversedBy: rev ? { batchId: rev.batchId, actor: actorName(rev.actorId), at: rev.at, action: rev.action } : null,
 			canUndo: isBatch && refusal === null,
-			canRedo: isBatch && redoRefusal({ actorId: first.actorId, kind, reversed: !!rev }, opts.viewer) === null,
+			canRedo: isBatch && redoRefusal({ actorId: first.actorId, kind, reversed: !!rev, holidays }, opts.viewer) === null,
 			undoRefusal: isBatch ? refusal : null,
 		};
 	});
@@ -223,8 +225,9 @@ export async function stepConflict(seriesId: string | null, taskIds: string[], o
 }
 
 /** Why the viewer cannot redo this batch, or null. Only the person who undid it can redo it. */
-export function redoRefusal(batch: { actorId: string | null; kind: ReturnType<typeof batchKind>; reversed: boolean }, viewer: { personId: string }): string | null {
+export function redoRefusal(batch: { actorId: string | null; kind: ReturnType<typeof batchKind>; reversed: boolean; holidays?: boolean }, viewer: { personId: string; systemRole?: string }): string | null {
 	if (batch.kind !== 'undo') return 'Only an undo can be redone.';
+	if (batch.holidays && viewer.systemRole !== 'admin') return 'Only an admin can change holidays.';
 	if (batch.reversed) return 'This has already been redone.';
 	if (batch.actorId !== viewer.personId) return 'Only the person who undid this can redo it.';
 	return null;

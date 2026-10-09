@@ -144,9 +144,9 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 		.where(and(eq(seriesMembers.seriesId, seriesId), eq(seriesMembers.personId, personId)))
 		.then(r => r[0] ?? null);
 
-	const isAdmin = await db.select({ isAdmin: people.isAdmin })
+	const isAdmin = await db.select({ systemRole: people.systemRole })
 		.from(people).where(eq(people.id, personId))
-		.then(r => !!r[0]?.isAdmin);
+		.then(r => !!r[0] && r[0].systemRole !== 'member');
 
 	if (!isAdmin && mem?.role !== 'coordinator') throw error(403, 'Coordinator role required');
 

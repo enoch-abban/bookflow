@@ -215,18 +215,18 @@ async function main() {
 	// ── People ─────────────────────────────────────────────────────────────────
 
 	await db.insert(people).values([
-		{ id: P.et1, displayName: 'EdTech 1',        email: 'edtech1@example.com',    isAdmin: 1, active: 1 },
-		{ id: P.et2, displayName: 'EdTech 2',        email: 'edtech2@example.com',    isAdmin: 0, active: 1 },
-		{ id: P.et3, displayName: 'EdTech 3',        email: 'edtech3@example.com',    isAdmin: 0, active: 1 },
-		{ id: P.rv1, displayName: 'Rev 1',           email: 'rev1@example.com',       isAdmin: 0, active: 1 },
-		{ id: P.rv2, displayName: 'Rev 2',           email: 'rev2@example.com',       isAdmin: 0, active: 1 },
-		{ id: P.rv3, displayName: 'Rev 3',           email: 'rev3@example.com',       isAdmin: 0, active: 1 },
-		{ id: P.rv4, displayName: 'Rev 4',           email: 'rev4@example.com',       isAdmin: 0, active: 1 },
-		{ id: P.ds1, displayName: 'Designer 1',      email: 'designer1@example.com',  isAdmin: 0, active: 1 },
-		{ id: P.ds2, displayName: 'Designer 2',      email: 'designer2@example.com',  isAdmin: 0, active: 1 },
-		{ id: P.ds3, displayName: 'Designer 3',      email: 'designer3@example.com',  isAdmin: 0, active: 1 },
-		{ id: P.prd, displayName: 'Production Unit', email: 'production@example.com', isAdmin: 0, active: 1 },
-		{ id: P.bnd, displayName: 'External Binder', email: null,                     isAdmin: 0, active: 1 },
+		{ id: P.et1, displayName: 'EdTech 1',        email: 'edtech1@example.com',    systemRole: 'admin' as const, active: 1 },
+		{ id: P.et2, displayName: 'EdTech 2',        email: 'edtech2@example.com',    systemRole: 'member' as const, active: 1 },
+		{ id: P.et3, displayName: 'EdTech 3',        email: 'edtech3@example.com',    systemRole: 'member' as const, active: 1 },
+		{ id: P.rv1, displayName: 'Rev 1',           email: 'rev1@example.com',       systemRole: 'member' as const, active: 1 },
+		{ id: P.rv2, displayName: 'Rev 2',           email: 'rev2@example.com',       systemRole: 'member' as const, active: 1 },
+		{ id: P.rv3, displayName: 'Rev 3',           email: 'rev3@example.com',       systemRole: 'member' as const, active: 1 },
+		{ id: P.rv4, displayName: 'Rev 4',           email: 'rev4@example.com',       systemRole: 'member' as const, active: 1 },
+		{ id: P.ds1, displayName: 'Designer 1',      email: 'designer1@example.com',  systemRole: 'member' as const, active: 1 },
+		{ id: P.ds2, displayName: 'Designer 2',      email: 'designer2@example.com',  systemRole: 'member' as const, active: 1 },
+		{ id: P.ds3, displayName: 'Designer 3',      email: 'designer3@example.com',  systemRole: 'member' as const, active: 1 },
+		{ id: P.prd, displayName: 'Production Unit', email: 'production@example.com', systemRole: 'member' as const, active: 1 },
+		{ id: P.bnd, displayName: 'External Binder', email: null,                     systemRole: 'member' as const, active: 1 },
 	]);
 
 	// ── Series Members ─────────────────────────────────────────────────────────

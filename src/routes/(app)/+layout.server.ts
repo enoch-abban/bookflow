@@ -10,9 +10,11 @@ const LAST_SERIES = 'bookflow_series';
 // keep the last series opened, remembered in a cookie, so its links stay one click away.
 export const load: LayoutServerLoad = async ({ locals, params, cookies }) => {
 	const me = locals.user
-		? await db.select({ id: people.id, isAdmin: people.isAdmin, tourDoneAt: people.tourDoneAt }).from(people).where(eq(people.userId, locals.user.id)).then(r => r[0])
+		? await db.select({ id: people.id, systemRole: people.systemRole, displayName: people.displayName, tourDoneAt: people.tourDoneAt }).from(people).where(eq(people.userId, locals.user.id)).then(r => r[0])
 		: undefined;
-	const seriesList = await visibleSeries(me?.id ?? null, !!me?.isAdmin);
+	// Admins and managers have app-wide access; only admins manage system roles and holidays.
+	const isAdmin = !!me && me.systemRole !== 'member';
+	const seriesList = await visibleSeries(me?.id ?? null, isAdmin);
 
 	const wanted = params.series ?? cookies.get(LAST_SERIES);
 	const current = seriesList.find((s) => s.id === wanted) ?? seriesList[0] ?? null;
@@ -27,12 +29,14 @@ export const load: LayoutServerLoad = async ({ locals, params, cookies }) => {
 
 	return {
 		user: locals.user ?? null,
-		isAdmin: !!me?.isAdmin,
-		canManageSeries: !!me?.isAdmin || role === 'coordinator',
+		isAdmin,
+		systemRole: me?.systemRole ?? 'member',
+		me: me ? { id: me.id, displayName: me.displayName } : null,
+		canManageSeries: isAdmin || role === 'coordinator',
 		seriesId: current?.id ?? null,
 		seriesList,
 		// For the guided tour: what to show, and whether it still starts by itself.
-		role: me?.isAdmin ? 'admin' as const : (role ?? 'contributor') as 'coordinator' | 'contributor' | 'viewer',
+		role: isAdmin ? me!.systemRole as 'admin' | 'manager' : (role ?? 'contributor') as 'coordinator' | 'contributor' | 'viewer',
 		tourDone: !me || !!me.tourDoneAt,
 	};
 };

@@ -16,6 +16,12 @@ describe('tour steps', () => {
 		expect(ids({ seriesId: 's1', role: 'admin', seriesCount: 1 })).toEqual(expect.arrayContaining(['series', 'templates', 'admin']));
 	});
 
+	it('gives managers templates and people, but not the admin-only calendar step', () => {
+		const got = ids({ seriesId: 's1', role: 'manager', seriesCount: 1 });
+		expect(got).toEqual(expect.arrayContaining(['series', 'undo', 'settings', 'templates', 'people']));
+		expect(got).not.toContain('admin');
+	});
+
 	it('leaves out series pages when there is no series, and My tasks for viewers', () => {
 		expect(ids({ seriesId: null, role: 'admin', seriesCount: 0 })).toEqual(['welcome', 'series', 'me', 'templates', 'admin', 'done']);
 		expect(ids({ seriesId: 's1', role: 'viewer', seriesCount: 1 })).not.toContain('me');

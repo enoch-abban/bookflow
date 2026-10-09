@@ -26,7 +26,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const body = await parseBody<Body>(request);
 	if (!body.batchId) throw error(400, 'batchId required');
 
-	const { personId, isAdmin } = await resolvePerson(locals);
+	const { personId, isAdmin, systemRole } = await resolvePerson(locals);
 
 	// Load all log entries for this batch, oldest first
 	const entries = await db.select()
@@ -44,7 +44,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const kind = batchKind(entries.map((e) => ({ ...e, before: null, after: null })));
 	const reversed = (await reversals([body.batchId])).has(body.batchId);
 	const recent = isAdmin || !batchSeriesId ? [] : await recentBatches(personId, batchSeriesId);
-	const refusal = undoRefusal({ batchId: body.batchId, actorId, kind, reversed }, { personId, isAdmin }, recent);
+	const touchesHolidays = entries.some((e) => e.entity === 'holiday');
+	const refusal = undoRefusal({ batchId: body.batchId, actorId, kind, reversed, holidays: touchesHolidays }, { personId, isAdmin, systemRole }, recent);
 	if (refusal) throw error(reversed ? 409 : 403, refusal);
 
 	// Undoing a redo reverses its snapshots, as redo reversed the undo before it.

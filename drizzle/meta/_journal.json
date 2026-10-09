@@ -43,6 +43,13 @@
       "when": 1791466732834,
       "tag": "0005_people_tour",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1791549947343,
+      "tag": "0006_system_roles",
+      "breakpoints": true
     }
   ]
 }

@@ -16,7 +16,7 @@ export const load: PageServerLoad = async ({ params, url, locals }) => {
 	const who = url.searchParams.get('who') ?? '';
 	const actorId = who === 'me' ? me.personId : who || undefined;
 	const before = url.searchParams.get('before') ?? undefined;
-	const { items, cursor } = await feed({ seriesId: ser.id, viewer: { personId: me.personId, isAdmin: me.isAdmin }, actorId, before });
+	const { items, cursor } = await feed({ seriesId: ser.id, viewer: { personId: me.personId, isAdmin: me.isAdmin, systemRole: me.systemRole }, actorId, before });
 
 	return {
 		series: ser, items, cursor, who, before: before ?? null,

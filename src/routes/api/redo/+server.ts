@@ -14,14 +14,15 @@ import { reverseStep } from '#lib/server/reapply.ts';
 export const POST: RequestHandler = async ({ request, locals }) => {
 	const body = await parseBody<{ batchId: string }>(request);
 	if (!body.batchId) throw error(400, 'batchId required');
-	const { personId } = await resolvePerson(locals);
+	const { personId, systemRole } = await resolvePerson(locals);
 
 	const entries = await db.select().from(activityLog).where(eq(activityLog.batchId, body.batchId)).orderBy(asc(activityLog.id));
 	if (!entries.length) throw error(404, 'Batch not found');
 
 	const kind = batchKind(entries.map((e) => ({ ...e, before: null, after: null })));
 	const reversed = (await reversals([body.batchId])).has(body.batchId);
-	const refusal = redoRefusal({ actorId: entries[0].actorId, kind, reversed }, { personId });
+	const touchesHolidays = entries.some((e) => e.entity === 'holiday');
+	const refusal = redoRefusal({ actorId: entries[0].actorId, kind, reversed, holidays: touchesHolidays }, { personId, systemRole });
 	if (refusal) throw error(reversed ? 409 : 403, refusal);
 
 	const res = await reverseStep({ sourceBatchId: body.batchId, entries, actorId: personId, action: 'redo' });

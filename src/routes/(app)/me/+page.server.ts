@@ -60,7 +60,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		})));
 
 	// Waiting for my review: work in review that the next review stage assigns to me.
-	const mySeries = person.isAdmin
+	const mySeries = person.systemRole !== 'member'
 		? null
 		: await db.select({ id: seriesMembers.seriesId }).from(seriesMembers).where(eq(seriesMembers.personId, person.id)).then((r) => r.map((x) => x.id));
 	const inReview = mySeries && !mySeries.length ? [] : await db
