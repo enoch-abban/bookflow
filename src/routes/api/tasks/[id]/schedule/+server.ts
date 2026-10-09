@@ -1,11 +1,11 @@
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { ulid } from 'ulid';
-import { db } from '#lib/server/db/index.ts';
+import { writeAll } from '#lib/server/db/index.ts';
 import { requireCoord, parseBody, versionConflict, loadTaskWithSeries } from '#lib/server/api-auth.ts';
 import { checkExplicitMove, deriveEnd, propagate } from '#lib/server/scheduler.ts';
 import { loadSeriesContext, projectedFinish } from '#lib/server/series-context.ts';
-import { writeTaskChanges, type TaskChange } from '#lib/server/schedule-write.ts';
+import { taskChangeQueries, type TaskChange } from '#lib/server/schedule-write.ts';
 
 type Body = {
 	start: string;
@@ -52,9 +52,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
 	const batchId = ulid();
 	const now = new Date().toISOString();
-	const changed = await db.transaction((tx) =>
-		writeTaskChanges(tx, { seriesId, actorId: personId, batchId, now, original, changes })
-	);
+	// One round trip for every task written and its log entry.
+	const { queries, written: changed } = taskChangeQueries({ seriesId, actorId: personId, batchId, now, original, changes });
+	await writeAll(queries);
 
 	return json({ changed, batchId, projectedFinish: projectedFinish(ctx.taskMap, ctx.finishTaskIds) });
 };

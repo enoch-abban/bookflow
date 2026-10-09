@@ -6,7 +6,7 @@
 import { error } from '@sveltejs/kit';
 import { and, eq } from 'drizzle-orm';
 import { ulid } from 'ulid';
-import { db } from '#lib/server/db/index.ts';
+import { db, writeAll } from '#lib/server/db/index.ts';
 import { activityLog, books, seriesMembers, stages, taskAssignees, tasks } from '#lib/server/db/schema.ts';
 import { isAllowedTransition } from './scheduler.ts';
 import { resolvePerson } from './api-auth.ts';
@@ -63,13 +63,14 @@ export async function changeStatus(locals: App.Locals, taskId: string, to: TaskR
 
 	const now = new Date().toISOString();
 	const updates = { ...statusUpdates(task, to, now), version: task.version + 1, updatedAt: now };
-	await db.transaction(async (tx) => {
-		await tx.update(tasks).set(updates).where(eq(tasks.id, task.id));
-		await tx.insert(activityLog).values({
+	// One round trip: the task and its log entry, all or nothing.
+	await writeAll([
+		db.update(tasks).set(updates).where(eq(tasks.id, task.id)),
+		db.insert(activityLog).values({
 			id: ulid(), seriesId, actorId: personId, entity: 'task', entityId: task.id, action: 'status',
 			beforeJson: JSON.stringify({ status: task.status, version: task.version }),
 			afterJson: JSON.stringify(updates), createdAt: now,
-		});
-	});
+		}),
+	]);
 	return { ...task, ...updates };
 }

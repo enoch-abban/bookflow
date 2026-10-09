@@ -31,7 +31,11 @@ export const auth = betterAuth({
 	},
 	session: {
 		expiresIn: 60 * 60 * 24 * 7, // 7 days
-		updateAge: 60 * 60 * 24 // refresh if older than 1 day
+		updateAge: 60 * 60 * 24, // refresh if older than 1 day
+		// Keep the session in a signed cookie for 5 minutes, so most requests skip the session
+		// lookup (a database round trip). A deactivated person is still refused at once:
+		// resolvePerson checks that they are active on every request.
+		cookieCache: { enabled: true, maxAge: 5 * 60 }
 	},
 	// Sign-in needs password AND emailed code, so the single-factor routes are only
 	// reachable server-side through the /login and /invite form actions.

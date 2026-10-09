@@ -5,7 +5,7 @@
 import { error } from '@sveltejs/kit';
 import { and, asc, eq, inArray, isNull, max } from 'drizzle-orm';
 import { ulid } from 'ulid';
-import { db } from '#lib/server/db/index.ts';
+import { db, writeAll } from '#lib/server/db/index.ts';
 import {
 	activityLog, bookStageSkips, books, dependencies, printRecords, series, stageLinks, stageTracks, stages,
 	taskAssignees, tasks, windows
@@ -16,15 +16,6 @@ import { buildPredMap, earliestStart, settle, type SchedTask, type WindowRules }
 import { refreshHolidays } from './calendar-db.ts';
 
 type StageRow = typeof stages.$inferSelect;
-
-/** A track's live stages in matrix order. */
-async function trackStages(trackId: string): Promise<StageRow[]> {
-	return db.select({ s: stages }).from(stageTracks)
-		.innerJoin(stages, eq(stages.id, stageTracks.stageId))
-		.where(and(eq(stageTracks.trackId, trackId), isNull(stages.archivedAt)))
-		.orderBy(asc(stages.sortOrder))
-		.then((r) => r.map((x) => x.s));
-}
 
 export async function seriesPattern(seriesId: string): Promise<StageLink[]> {
 	return db.select({ from: stageLinks.fromStageId, to: stageLinks.toStageId, lagDays: stageLinks.lagDays })
@@ -52,15 +43,23 @@ type NewTask = typeof tasks.$inferInsert & { assignees: { personId: string; isLe
 export async function addBook(opts: { seriesId: string; actorId: string; input: AddBookInput; preview: boolean; today: string }) {
 	const { seriesId, actorId, input } = opts;
 	await refreshHolidays();
-	const ser = await db.select().from(series).where(eq(series.id, seriesId)).then((r) => r[0]);
+	// One round trip for what every book needs: the series, a code clash, the track's stages,
+	// the dependency pattern, windows and the next sort position.
+	const [serRows, clash, trackStageRows, pattern, wins, maxSort] = await db.batch([
+		db.select().from(series).where(eq(series.id, seriesId)),
+		db.select({ id: books.id }).from(books).where(and(eq(books.seriesId, seriesId), eq(books.code, input.code))),
+		db.select({ s: stages }).from(stageTracks).innerJoin(stages, eq(stages.id, stageTracks.stageId))
+			.where(and(eq(stageTracks.trackId, input.trackId), eq(stages.seriesId, seriesId), isNull(stages.archivedAt))).orderBy(asc(stages.sortOrder)),
+		db.select({ from: stageLinks.fromStageId, to: stageLinks.toStageId, lagDays: stageLinks.lagDays })
+			.from(stageLinks).innerJoin(stages, eq(stages.id, stageLinks.fromStageId)).where(eq(stages.seriesId, seriesId)),
+		db.select().from(windows).where(eq(windows.seriesId, seriesId)).orderBy(asc(windows.startDate)),
+		db.select({ m: max(books.sortOrder) }).from(books).where(eq(books.seriesId, seriesId)),
+	]);
+	const ser = serRows[0];
 	if (!ser) throw error(404, 'Series not found');
-
-	const clash = await db.select({ id: books.id }).from(books).where(and(eq(books.seriesId, seriesId), eq(books.code, input.code)));
 	if (clash.length) throw error(409, `Another book in this series already uses the code ${input.code}.`);
-
-	const trackOk = await db.select({ id: stageTracks.trackId }).from(stageTracks).where(eq(stageTracks.trackId, input.trackId)).limit(1);
-	const stagesOfTrack = await trackStages(input.trackId);
-	if (!trackOk.length || !stagesOfTrack.length) throw error(400, 'Choose a track with at least one stage.');
+	const stagesOfTrack = trackStageRows.map((x) => x.s);
+	if (!stagesOfTrack.length) throw error(400, 'Choose a track with at least one stage.');
 	const stageById = new Map(stagesOfTrack.map((s) => [s.id, s]));
 
 	const bookId = ulid();
@@ -92,11 +91,10 @@ export async function addBook(opts: { seriesId: string; actorId: string; input: 
 		skipIds = (input.schedule.skipStageIds ?? []).filter((id) => stageById.has(id));
 		const fromDate = toWorkingDay(input.schedule.fromDate ?? nextWorkingDay(opts.today));
 		const present = stagesOfTrack.filter((s) => !skipIds.includes(s.id));
-		const links = bookLinks(new Set(present.map((s) => s.id)), await seriesPattern(seriesId));
+		const links = bookLinks(new Set(present.map((s) => s.id)), pattern);
 
 		// Chain from the date: each task starts once its predecessors allow, never before
 		// the date, and is placed in windows like a slip.
-		const wins = await db.select().from(windows).where(eq(windows.seriesId, seriesId)).orderBy(asc(windows.startDate));
 		const rules: WindowRules = { enforce: !!ser.enforceWindows, windows: wins, overflowDays: ser.windowOverflowDays };
 		const idOf = new Map(present.map((s) => [s.id, ulid()]));
 		const deps = links.map((l) => ({ predecessorId: idOf.get(l.from)!, successorId: idOf.get(l.to)!, lagDays: l.lagDays }));
@@ -123,16 +121,16 @@ export async function addBook(opts: { seriesId: string; actorId: string; input: 
 
 	// Dependencies from the series pattern, bridging the book's skipped stages.
 	const taskOfStage = new Map(newTasks.map((t) => [t.stageId, t.id!]));
-	const depRows = bookLinks(new Set(taskOfStage.keys()), await seriesPattern(seriesId))
+	const depRows = bookLinks(new Set(taskOfStage.keys()), pattern)
 		.map((l) => ({ id: ulid(), predecessorId: taskOfStage.get(l.from)!, successorId: taskOfStage.get(l.to)!, lagDays: l.lagDays }));
 
-	const sortOrder = ((await db.select({ m: max(books.sortOrder) }).from(books).where(eq(books.seriesId, seriesId)))[0]?.m ?? 0) + 1;
+	const sortOrder = (maxSort[0]?.m ?? 0) + 1;
 	const book = {
 		id: bookId, seriesId, trackId: input.trackId, code: input.code, name: input.name,
 		groupLabel: input.groupLabel ?? null, batch: input.batch ?? null, sortOrder,
 	};
 
-	const winLabel = new Map((await db.select().from(windows).where(eq(windows.seriesId, seriesId))).map((w) => [w.id, w.label]));
+	const winLabel = new Map(wins.map((w) => [w.id, w.label]));
 	const report = {
 		book,
 		tasks: [...newTasks]
@@ -149,21 +147,22 @@ export async function addBook(opts: { seriesId: string; actorId: string; input: 
 	if (opts.preview) return { preview: true as const, ...report };
 
 	const batchId = ulid();
-	await db.transaction(async (tx) => {
-		await tx.insert(books).values(book);
-		if (skipIds.length) await tx.insert(bookStageSkips).values(skipIds.map((stageId) => ({ bookId, stageId })));
-		// Drizzle writes only the table's columns, so the assignees list is ignored here.
-		if (newTasks.length) await tx.insert(tasks).values(newTasks);
-		const assigneeRows = newTasks.flatMap((t) => t.assignees.map((a) => ({ taskId: t.id!, ...a })));
-		if (assigneeRows.length) await tx.insert(taskAssignees).values(assigneeRows);
-		if (depRows.length) await tx.insert(dependencies).values(depRows);
-		await tx.insert(printRecords).values({ bookId, copiesPlanned: ser.defaultCopies, depositCopies: ser.legalDepositCopies, updatedAt: now });
-		await tx.insert(activityLog).values({
+	// One round trip for the whole book, all or nothing.
+	// Drizzle writes only the table's columns, so the assignees list on each task is ignored.
+	const assigneeRows = newTasks.flatMap((t) => t.assignees.map((a) => ({ taskId: t.id!, ...a })));
+	await writeAll([
+		db.insert(books).values(book),
+		...(skipIds.length ? [db.insert(bookStageSkips).values(skipIds.map((stageId) => ({ bookId, stageId })))] : []),
+		...(newTasks.length ? [db.insert(tasks).values(newTasks)] : []),
+		...(assigneeRows.length ? [db.insert(taskAssignees).values(assigneeRows)] : []),
+		...(depRows.length ? [db.insert(dependencies).values(depRows)] : []),
+		db.insert(printRecords).values({ bookId, copiesPlanned: ser.defaultCopies, depositCopies: ser.legalDepositCopies, updatedAt: now }),
+		db.insert(activityLog).values({
 			id: ulid(), seriesId, actorId, entity: 'book', entityId: bookId, action: 'create',
 			afterJson: JSON.stringify({ ...book, schedule: input.schedule, tasks: newTasks.length, skips: skipIds }),
 			batchId, createdAt: now,
-		});
-	});
+		}),
+	]);
 
 	return { preview: false as const, ...report, batchId };
 }

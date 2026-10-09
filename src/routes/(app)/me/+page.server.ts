@@ -6,30 +6,25 @@ import {
 	books,
 	stages,
 	series as seriesTable,
-	people,
 	seriesMembers,
 } from '#lib/server/db/schema.ts';
 import { eq, and, ne, asc, isNull, inArray } from 'drizzle-orm';
 import { fail, isHttpError } from '@sveltejs/kit';
 import { changeStatus } from '#lib/server/task-status.ts';
-import { recordReview, reviewersOf } from '#lib/server/reviews.ts';
+import { recordReview, reviewersOfMany } from '#lib/server/reviews.ts';
+import { currentPerson } from '#lib/server/api-auth.ts';
 
 export const load: PageServerLoad = async ({ locals }) => {
-	// Find person record linked to current user
-	const person = locals.user
-		? await db
-				.select()
-				.from(people)
-				.where(eq(people.userId, locals.user.id))
-				.then((r) => r[0] ?? null)
-		: null;
+	// The person behind this account (already looked up for the layout in this request).
+	const person = await currentPerson(locals);
 
 	if (!person) return { person: null, groups: [], reviews: [] };
 
 	const today = new Date().toISOString().slice(0, 10);
 	const soonCutoff = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
 
-	const rows = await db
+	// My open tasks and the work in review, side by side; then one reviewer lookup for all of them.
+	const myTasks = db
 		.select({
 			taskId: tasks.id,
 			status: tasks.status,
@@ -52,18 +47,12 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.innerJoin(stages, eq(stages.id, tasks.stageId))
 		.innerJoin(seriesTable, eq(seriesTable.id, books.seriesId))
 		.where(and(eq(taskAssignees.personId, person.id), ne(tasks.status, 'done'), isNull(books.archivedAt), isNull(stages.archivedAt)))
-		.orderBy(asc(tasks.endDate))
-		.then((list) => Promise.all(list.map(async (r) => {
-			// Whether a review stage follows decides Submit for review vs Done; in review, who it waits on.
-			const who = await reviewersOf({ id: r.taskId, bookId: r.bookId, stageId: r.stageId });
-			return { ...r, reviewed: who.reviewerTasks.length > 0, waitingOn: who.people.map((p) => p.name) };
-		})));
+		.orderBy(asc(tasks.endDate));
 
-	// Waiting for my review: work in review that the next review stage assigns to me.
-	const mySeries = person.systemRole !== 'member'
-		? null
-		: await db.select({ id: seriesMembers.seriesId }).from(seriesMembers).where(eq(seriesMembers.personId, person.id)).then((r) => r.map((x) => x.id));
-	const inReview = mySeries && !mySeries.length ? [] : await db
+	// Waiting for my review: work in review, on series I belong to (admins and managers: all),
+	// that the next review stage assigns to me.
+	const member = person.systemRole === 'member';
+	const inReviewQuery = db
 		.select({
 			taskId: tasks.id, bookId: tasks.bookId, stageId: tasks.stageId, iteration: tasks.iteration, feedbackUrl: tasks.feedbackUrl,
 			endDate: tasks.endDate, bookCode: books.code, stageName: stages.name, seriesName: seriesTable.name, seriesId: seriesTable.id,
@@ -72,12 +61,18 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.innerJoin(books, eq(books.id, tasks.bookId))
 		.innerJoin(stages, eq(stages.id, tasks.stageId))
 		.innerJoin(seriesTable, eq(seriesTable.id, books.seriesId))
-		.where(and(eq(tasks.status, 'in_review'), isNull(books.archivedAt), ...(mySeries ? [inArray(books.seriesId, mySeries)] : [])));
-	const reviews = [];
-	for (const r of inReview) {
-		const who = await reviewersOf({ id: r.taskId, bookId: r.bookId, stageId: r.stageId });
-		if (who.people.some((p) => p.id === person.id)) reviews.push(r);
-	}
+		.where(and(
+			eq(tasks.status, 'in_review'), isNull(books.archivedAt),
+			member ? inArray(books.seriesId, db.select({ id: seriesMembers.seriesId }).from(seriesMembers).where(eq(seriesMembers.personId, person.id))) : undefined,
+		));
+	const [mine, inReview] = await Promise.all([myTasks, inReviewQuery]);
+	const who = await reviewersOfMany([...mine, ...inReview].map((r) => ({ id: r.taskId, bookId: r.bookId, stageId: r.stageId })));
+	// Whether a review stage follows decides Submit for review vs Done; in review, who it waits on.
+	const rows = mine.map((r) => {
+		const w = who.get(r.taskId)!;
+		return { ...r, reviewed: w.reviewerTasks.length > 0, waitingOn: w.people.map((p) => p.name) };
+	});
+	const reviews = inReview.filter((r) => who.get(r.taskId)!.people.some((p) => p.id === person.id));
 
 	// Group by urgency
 	const overdue: typeof rows = [];

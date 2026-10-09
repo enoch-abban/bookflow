@@ -4,7 +4,7 @@
  * stages, dependency pattern, team labels and settings, or starts from a blank pipeline.
  */
 import { error } from '@sveltejs/kit';
-import { asc, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
 import { activityLog, people, series, seriesMembers, stageLinks, stages, stageTracks, templates, tracks } from '#lib/server/db/schema.ts';
@@ -167,10 +167,10 @@ export async function createSeries(input: NewSeries, actorId: string) {
 }
 
 /** Series the person can open: every series for an admin, otherwise those they belong to. */
-export async function visibleSeries(personId: string | null, isAdmin: boolean) {
-	if (isAdmin) return db.select({ id: series.id, name: series.name, status: series.status }).from(series).orderBy(asc(series.name));
+export async function visibleSeries(personId: string | null, isAdmin: boolean): Promise<{ id: string; name: string; status: string; role: string | null }[]> {
 	if (!personId) return [];
-	return db.select({ id: series.id, name: series.name, status: series.status }).from(series)
-		.innerJoin(seriesMembers, eq(seriesMembers.seriesId, series.id))
-		.where(eq(seriesMembers.personId, personId)).orderBy(asc(series.name));
+	// One query: every series for an admin or manager, else their own; with their role on each.
+	return db.select({ id: series.id, name: series.name, status: series.status, role: seriesMembers.role }).from(series)
+		.leftJoin(seriesMembers, and(eq(seriesMembers.seriesId, series.id), eq(seriesMembers.personId, personId)))
+		.where(isAdmin ? undefined : isNotNull(seriesMembers.personId)).orderBy(asc(series.name));
 }

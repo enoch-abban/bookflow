@@ -6,7 +6,8 @@
  * stops being an admin.
  */
 import { error } from '@sveltejs/kit';
-import { and, eq, isNull, or } from 'drizzle-orm';
+import { and, eq, isNull, or, type SQL } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/sqlite-core';
 import { randomInt, timingSafeEqual } from 'node:crypto';
 import { ulid } from 'ulid';
 import { ORIGIN } from '$app/env/private';
@@ -86,21 +87,41 @@ async function useCode(personId: string, code: string) {
 
 // ── Voiding ─────────────────────────────────────────────────────────────────
 
+/** Why a pending transfer can no longer happen, or null. */
+function staleReason(t: Transfer, from: Pick<Person, 'active' | 'systemRole'> | null, to: Pick<Person, 'active'> | null, now: string) {
+	return t.expiresAt < now ? 'expired'
+		: !from?.active ? 'sender deactivated'
+		: !to?.active ? 'recipient deactivated'
+		: from.systemRole !== 'admin' ? 'sender no longer an admin'
+		: null;
+}
+
+async function voidTransfer(t: Transfer, reason: string, now: string) {
+	await db.update(adminTransfers).set({ cancelledAt: now }).where(eq(adminTransfers.id, t.id));
+	await log(null, t.id, 'void', { reason });
+}
+
+const fromP = alias(people, 'from_p');
+const toP = alias(people, 'to_p');
+
+/** Pending transfers with both people, in one query; stale ones are voided on the way. */
+async function pendingWithPeople(where?: SQL) {
+	const rows = await db.select({ t: adminTransfers, from: fromP, to: toP }).from(adminTransfers)
+		.innerJoin(fromP, eq(fromP.id, adminTransfers.fromPersonId)).innerJoin(toP, eq(toP.id, adminTransfers.toPersonId))
+		.where(and(isNull(adminTransfers.acceptedAt), isNull(adminTransfers.cancelledAt), where));
+	const now = new Date().toISOString();
+	const live = [];
+	for (const r of rows) {
+		const reason = staleReason(r.t, r.from, r.to, now);
+		if (reason) await voidTransfer(r.t, reason, now);
+		else live.push(r);
+	}
+	return live;
+}
+
 /** Cancel pending transfers that can no longer happen, and say why. Safe to call often. */
 export async function voidStaleTransfers() {
-	const pending = await db.select().from(adminTransfers).where(and(isNull(adminTransfers.acceptedAt), isNull(adminTransfers.cancelledAt)));
-	const now = new Date().toISOString();
-	for (const t of pending) {
-		const [from, to] = await Promise.all([person(t.fromPersonId), person(t.toPersonId)]);
-		const reason = t.expiresAt < now ? 'expired'
-			: !from?.active ? 'sender deactivated'
-			: !to?.active ? 'recipient deactivated'
-			: from.systemRole !== 'admin' ? 'sender no longer an admin'
-			: null;
-		if (!reason) continue;
-		await db.update(adminTransfers).set({ cancelledAt: now }).where(eq(adminTransfers.id, t.id));
-		await log(null, t.id, 'void', { reason });
-	}
+	await pendingWithPeople();
 }
 
 // ── Start, accept, cancel ───────────────────────────────────────────────────
@@ -148,17 +169,10 @@ export async function pendingFrom(personId: string) {
 		.then((r) => r[0] ?? null);
 }
 
-/** The pending transfers this person sent or was offered, with names (for the People page and banner). */
+/** The pending transfers this person sent or was offered, with names (for the People page and banner). One query. */
 export async function pendingFor(personId: string) {
-	await voidStaleTransfers();
-	const rows = await db.select().from(adminTransfers)
-		.where(and(or(eq(adminTransfers.fromPersonId, personId), eq(adminTransfers.toPersonId, personId)), isNull(adminTransfers.acceptedAt), isNull(adminTransfers.cancelledAt)));
-	const out = [];
-	for (const t of rows) {
-		const [from, to] = await Promise.all([person(t.fromPersonId), person(t.toPersonId)]);
-		out.push({ id: t.id, from: from?.displayName ?? 'Someone', to: to?.displayName ?? 'Someone', senderNewRole: t.senderNewRole, expiresAt: t.expiresAt, mine: t.fromPersonId === personId });
-	}
-	return out;
+	const rows = await pendingWithPeople(or(eq(adminTransfers.fromPersonId, personId), eq(adminTransfers.toPersonId, personId)));
+	return rows.map(({ t, from, to }) => ({ id: t.id, from: from.displayName, to: to.displayName, senderNewRole: t.senderNewRole, expiresAt: t.expiresAt, mine: t.fromPersonId === personId }));
 }
 
 /** Look a transfer up by its emailed token, voiding it first if it can no longer happen. */

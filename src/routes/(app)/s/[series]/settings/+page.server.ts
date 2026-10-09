@@ -11,20 +11,32 @@ import { seriesLabels } from '#lib/server/templates.ts';
 export const load: PageServerLoad = async ({ params, locals }) => {
 	const me = await requireCoord(locals, params.series);
 
-	const ser = await db.select().from(series).where(eq(series.id, params.series)).then((r) => r[0]);
+	// One round trip for the whole page: the series, its members with their invites, everyone else
+	// who could join, windows with task counts, the pipeline (tracks, stages, books, their links,
+	// task counts and skips).
+	const sid = params.series;
+	const seriesTask = eq(books.seriesId, sid);
+	const [serRows, memberRows, inviteRows, activePeople, windowRows, taskCounts, unscheduledRows, trackRows, stageRows, bookRows, links, taskStats, skipRows] = await db.batch([
+		db.select().from(series).where(eq(series.id, sid)),
+		db.select({ member: seriesMembers, person: people }).from(seriesMembers).innerJoin(people, eq(people.id, seriesMembers.personId))
+			.where(eq(seriesMembers.seriesId, sid)).orderBy(asc(seriesMembers.teamLabel), asc(people.displayName)),
+		db.select().from(invites)
+			.where(inArray(invites.personId, db.select({ id: seriesMembers.personId }).from(seriesMembers).where(eq(seriesMembers.seriesId, sid))))
+			.orderBy(desc(invites.createdAt)),
+		db.select({ id: people.id, displayName: people.displayName }).from(people).where(eq(people.active, 1)).orderBy(asc(people.displayName)),
+		db.select().from(windows).where(eq(windows.seriesId, sid)).orderBy(asc(windows.startDate)),
+		db.select({ windowId: tasks.windowId, n: count() }).from(tasks).innerJoin(books, eq(books.id, tasks.bookId)).where(seriesTask).groupBy(tasks.windowId),
+		db.select({ n: count() }).from(tasks).innerJoin(books, eq(books.id, tasks.bookId)).where(and(seriesTask, eq(tasks.scheduleState, 'unscheduled'))),
+		db.select().from(tracks).where(eq(tracks.seriesId, sid)).orderBy(asc(tracks.sortOrder)),
+		db.select().from(stages).where(eq(stages.seriesId, sid)).orderBy(asc(stages.sortOrder)),
+		db.select().from(books).where(eq(books.seriesId, sid)).orderBy(asc(books.sortOrder)),
+		db.select({ stageId: stageTracks.stageId, trackId: stageTracks.trackId }).from(stageTracks).innerJoin(stages, eq(stages.id, stageTracks.stageId)).where(eq(stages.seriesId, sid)),
+		db.select({ stageId: tasks.stageId, bookId: tasks.bookId, n: count() }).from(tasks).innerJoin(books, eq(books.id, tasks.bookId)).where(seriesTask).groupBy(tasks.stageId, tasks.bookId),
+		db.select({ bookId: bookStageSkips.bookId, stageId: bookStageSkips.stageId }).from(bookStageSkips).innerJoin(books, eq(books.id, bookStageSkips.bookId)).where(seriesTask),
+	]);
+	const ser = serRows[0];
 	if (!ser) throw error(404, 'Series not found');
-
-	const memberRows = await db
-		.select({ member: seriesMembers, person: people })
-		.from(seriesMembers)
-		.innerJoin(people, eq(people.id, seriesMembers.personId))
-		.where(eq(seriesMembers.seriesId, ser.id))
-		.orderBy(asc(seriesMembers.teamLabel), asc(people.displayName));
-
 	const memberIds = memberRows.map((r) => r.person.id);
-	const inviteRows = memberIds.length
-		? await db.select().from(invites).where(inArray(invites.personId, memberIds)).orderBy(desc(invites.createdAt))
-		: [];
 	const openInvite = new Map<string, (typeof inviteRows)[number]>();
 	for (const inv of inviteRows)
 		if (!openInvite.has(inv.personId) && inviteState(inv) === 'open') openInvite.set(inv.personId, inv);
@@ -43,47 +55,13 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		};
 	});
 
-	const others = await db
-		.select({ id: people.id, displayName: people.displayName })
-		.from(people)
-		.where(eq(people.active, 1))
-		.orderBy(asc(people.displayName))
-		.then((rows) => rows.filter((p) => !memberIds.includes(p.id)));
+	const others = activePeople.filter((p) => !memberIds.includes(p.id));
 
-	const windowRows = await db.select().from(windows).where(eq(windows.seriesId, ser.id)).orderBy(asc(windows.startDate));
-	const taskCounts = await db
-		.select({ windowId: tasks.windowId, n: count() })
-		.from(tasks)
-		.innerJoin(books, eq(books.id, tasks.bookId))
-		.where(eq(books.seriesId, ser.id))
-		.groupBy(tasks.windowId);
 	const countBy = new Map(taskCounts.map((c) => [c.windowId, c.n]));
 	const windowList = windowRows.map((w) => ({ ...w, taskCount: countBy.get(w.id) ?? 0 }));
-	const unscheduled = await db
-		.select({ n: count() })
-		.from(tasks)
-		.innerJoin(books, eq(books.id, tasks.bookId))
-		.where(and(eq(books.seriesId, ser.id), eq(tasks.scheduleState, 'unscheduled')))
-		.then((r) => r[0]?.n ?? 0);
+	const unscheduled = unscheduledRows[0]?.n ?? 0;
 
 	// Pipeline: tracks with their stage sequence, stages and books with task counts.
-	const [trackRows, stageRows, bookRows] = await Promise.all([
-		db.select().from(tracks).where(eq(tracks.seriesId, ser.id)).orderBy(asc(tracks.sortOrder)),
-		db.select().from(stages).where(eq(stages.seriesId, ser.id)).orderBy(asc(stages.sortOrder)),
-		db.select().from(books).where(eq(books.seriesId, ser.id)).orderBy(asc(books.sortOrder))
-	]);
-	const links = stageRows.length
-		? await db.select().from(stageTracks).where(inArray(stageTracks.stageId, stageRows.map((s) => s.id)))
-		: [];
-	const taskStats = await db
-		.select({ stageId: tasks.stageId, bookId: tasks.bookId, n: count() })
-		.from(tasks)
-		.innerJoin(books, eq(books.id, tasks.bookId))
-		.where(eq(books.seriesId, ser.id))
-		.groupBy(tasks.stageId, tasks.bookId);
-	const skipRows = bookRows.length
-		? await db.select().from(bookStageSkips).where(inArray(bookStageSkips.bookId, bookRows.map((b) => b.id)))
-		: [];
 	const sum = (pick: (r: (typeof taskStats)[number]) => boolean) => taskStats.filter(pick).reduce((a, r) => a + r.n, 0);
 	const trackName = new Map(trackRows.map((t) => [t.id, t.name]));
 	// Archived stages and books keep Done work as history; they are listed separately.

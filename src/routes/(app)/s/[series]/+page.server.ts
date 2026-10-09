@@ -15,56 +15,46 @@ import {
 } from '#lib/server/db/schema.ts';
 import { refreshHolidays } from '#lib/server/calendar-db.ts';
 import { addWorkingDays } from '#lib/schedule/calendar.ts';
-import { and, eq, inArray, asc, isNull } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, isNull, or } from 'drizzle-orm';
+import { requireMember } from '#lib/server/api-auth.ts';
 
-export const load: PageServerLoad = async ({ params }) => {
+export const load: PageServerLoad = async ({ params, locals }) => {
 	const sid = params.series;
+	await requireMember(locals, sid);
 
-	const [ser] = await db.select().from(seriesTable).where(eq(seriesTable.id, sid));
+	// One round trip for the whole matrix: the series, its live stages and books, their tasks,
+	// assignees, the people who could appear in the Person filter, print records and reviews.
+	const liveTask = and(eq(books.seriesId, sid), isNull(books.archivedAt), isNull(stages.archivedAt));
+	const [serRows, stagesData, stageTrackLinks, booksData, taskRows, assigneesData, peopleRows, records, reviewRows] = await db.batch([
+		db.select().from(seriesTable).where(eq(seriesTable.id, sid)),
+		db.select().from(stages).where(and(eq(stages.seriesId, sid), isNull(stages.archivedAt))).orderBy(asc(stages.sortOrder)),
+		db.select({ stageId: stageTracks.stageId, trackId: stageTracks.trackId }).from(stageTracks)
+			.innerJoin(stages, eq(stages.id, stageTracks.stageId)).where(and(eq(stages.seriesId, sid), isNull(stages.archivedAt))),
+		db.select().from(books).where(and(eq(books.seriesId, sid), isNull(books.archivedAt))).orderBy(asc(books.sortOrder)),
+		db.select({ t: tasks }).from(tasks).innerJoin(books, eq(books.id, tasks.bookId)).innerJoin(stages, eq(stages.id, tasks.stageId)).where(liveTask),
+		db.select({ taskId: taskAssignees.taskId, personId: taskAssignees.personId, isLead: taskAssignees.isLead }).from(taskAssignees)
+			.innerJoin(tasks, eq(tasks.id, taskAssignees.taskId)).innerJoin(books, eq(books.id, tasks.bookId)).innerJoin(stages, eq(stages.id, tasks.stageId)).where(liveTask),
+		// Members, plus anyone assigned here who is not one.
+		db.select({ id: people.id, displayName: people.displayName }).from(people).where(or(
+			inArray(people.id, db.select({ id: seriesMembers.personId }).from(seriesMembers).where(eq(seriesMembers.seriesId, sid))),
+			inArray(people.id, db.select({ id: taskAssignees.personId }).from(taskAssignees)
+				.innerJoin(tasks, eq(tasks.id, taskAssignees.taskId)).innerJoin(books, eq(books.id, tasks.bookId)).where(eq(books.seriesId, sid))),
+		)),
+		db.select({ r: printRecords }).from(printRecords).innerJoin(books, eq(books.id, printRecords.bookId)).where(and(eq(books.seriesId, sid), isNull(books.archivedAt))),
+		db.select({ taskId: reviewCycles.taskId, n: count() }).from(reviewCycles)
+			.innerJoin(tasks, eq(tasks.id, reviewCycles.taskId)).innerJoin(books, eq(books.id, tasks.bookId)).where(eq(books.seriesId, sid))
+			.groupBy(reviewCycles.taskId),
+	]);
+	const ser = serRows[0];
 	if (!ser) throw error(404, 'Series not found');
-
-	const stagesData = await db
-		.select()
-		.from(stages)
-		.where(and(eq(stages.seriesId, sid), isNull(stages.archivedAt)))
-		.orderBy(asc(stages.sortOrder));
-
-	const stageIds = stagesData.map((s) => s.id);
-	const stageTrackLinks = stageIds.length
-		? await db.select().from(stageTracks).where(inArray(stageTracks.stageId, stageIds))
-		: [];
-
-	const booksData = await db
-		.select()
-		.from(books)
-		.where(and(eq(books.seriesId, sid), isNull(books.archivedAt)))
-		.orderBy(asc(books.sortOrder));
-
-	const bookIds = booksData.map((b) => b.id);
-	const tasksData = bookIds.length
-		? await db.select().from(tasks).where(and(inArray(tasks.bookId, bookIds), inArray(tasks.stageId, stageIds)))
-		: [];
-
-	const taskIds = tasksData.map((t) => t.id);
-	const assigneesData = taskIds.length
-		? await db.select().from(taskAssignees).where(inArray(taskAssignees.taskId, taskIds))
-		: [];
-
-	// Everyone who could appear in the Person filter: members plus anyone assigned here.
-	const memberRows = await db.select({ personId: seriesMembers.personId }).from(seriesMembers).where(eq(seriesMembers.seriesId, sid));
-	const personIds = [...new Set([...assigneesData.map((a) => a.personId), ...memberRows.map((m) => m.personId)])];
-	const peopleData = personIds.length
-		? await db.select().from(people).where(inArray(people.id, personIds))
-		: [];
+	const tasksData = taskRows.map((r) => r.t);
+	const peopleData = peopleRows;
 
 	// Copies against plan for the printing and binding cells (spec: Status matrix).
-	const records = bookIds.length ? await db.select().from(printRecords).where(inArray(printRecords.bookId, bookIds)) : [];
-	const copies = Object.fromEntries(records.map((r) => [r.bookId, { printed: r.copiesPrinted, bound: r.copiesBound, run: r.copiesPlanned + r.depositCopies }]));
+	const copies = Object.fromEntries(records.map(({ r }) => [r.bookId, { printed: r.copiesPrinted, bound: r.copiesBound, run: r.copiesPlanned + r.depositCopies }]));
 
 	// Review badges: reviews recorded per task (pending = the task is In review).
-	const reviewRows = taskIds.length ? await db.select({ taskId: reviewCycles.taskId }).from(reviewCycles).where(inArray(reviewCycles.taskId, taskIds)) : [];
-	const reviewsDone: Record<string, number> = {};
-	for (const r of reviewRows) reviewsDone[r.taskId] = (reviewsDone[r.taskId] ?? 0) + 1;
+	const reviewsDone: Record<string, number> = Object.fromEntries(reviewRows.map((r) => [r.taskId, r.n]));
 
 	// Build stats
 	const today = new Date().toISOString().slice(0, 10);

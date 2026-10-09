@@ -4,7 +4,7 @@
  * links, comments and activity, and what the viewer may change.
  */
 import { error } from '@sveltejs/kit';
-import { and, desc, eq, inArray, or } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '#lib/server/db/index.ts';
 import {
 	activityLog, books, dependencies, people, series, seriesMembers, stages, taskAssignees, taskComments, tasks, windows,
@@ -12,9 +12,8 @@ import {
 import { refreshHolidays } from '#lib/server/calendar-db.ts';
 import { isWorkingDay } from '#lib/schedule/calendar.ts';
 import { summarize, workload } from '#lib/schedule/workload.ts';
-import { describe as describeEntry } from '#lib/activity/describe.ts';
-import { namesFor } from '#lib/server/history.ts';
-import { reviewersOf } from '#lib/server/reviews.ts';
+import { describe as describeEntry, type Names } from '#lib/activity/describe.ts';
+import { findReviewerTasks } from '#lib/server/reviews.ts';
 import { resolvePerson } from '#lib/server/api-auth.ts';
 
 const ALLOWED: Record<string, string[]> = {
@@ -40,33 +39,52 @@ function workingDays(from: string, to: string): string[] {
 
 export async function taskDetail(locals: App.Locals, taskId: string) {
 	const { personId, isAdmin } = await resolvePerson(locals);
-	const row = await db.select({ t: tasks, b: books, s: stages }).from(tasks)
+	// 1. The task, its book, stage and series, and the viewer's role there: one query.
+	const row = await db.select({ t: tasks, b: books, s: stages, ser: series, myRole: seriesMembers.role }).from(tasks)
 		.innerJoin(books, eq(books.id, tasks.bookId)).innerJoin(stages, eq(stages.id, tasks.stageId))
+		.innerJoin(series, eq(series.id, books.seriesId))
+		.leftJoin(seriesMembers, and(eq(seriesMembers.seriesId, books.seriesId), eq(seriesMembers.personId, personId)))
 		.where(eq(tasks.id, taskId)).then((r) => r[0]);
 	if (!row) throw error(404, 'Task not found');
-	const { t, b, s } = row;
-	const ser = await db.select().from(series).where(eq(series.id, b.seriesId)).then((r) => r[0]);
-	const me = await db.select({ role: seriesMembers.role }).from(seriesMembers)
-		.where(and(eq(seriesMembers.seriesId, ser.id), eq(seriesMembers.personId, personId))).then((r) => r[0]);
-	if (!isAdmin && !me) throw error(403, 'Not a series member');
+	const { t, b, s, ser } = row;
+	if (!isAdmin && !row.myRole) throw error(403, 'Not a series member');
 	await refreshHolidays();
 
-	const [assigneeRows, memberRows, depRows, commentRows, windowRow] = await Promise.all([
-		db.select({ personId: taskAssignees.personId, isLead: taskAssignees.isLead, name: people.displayName })
-			.from(taskAssignees).innerJoin(people, eq(people.id, taskAssignees.personId)).where(eq(taskAssignees.taskId, t.id)),
-		db.select({ personId: seriesMembers.personId, team: seriesMembers.teamLabel, capacity: seriesMembers.capacity, role: seriesMembers.role, name: people.displayName, active: people.active })
+	// 2. Everything else in one round trip: members, the series' tasks, links and assignees
+	//    (for links, reviewers and workload), comments, the window and this task's history.
+	const [memberRows, seriesTasks, seriesDeps, seriesAssignees, commentRows, windowRows, logRows] = await db.batch([
+		db.select({ personId: seriesMembers.personId, team: seriesMembers.teamLabel, capacity: seriesMembers.capacity, name: people.displayName, active: people.active })
 			.from(seriesMembers).innerJoin(people, eq(people.id, seriesMembers.personId)).where(eq(seriesMembers.seriesId, ser.id)),
-		db.select().from(dependencies).where(or(eq(dependencies.predecessorId, t.id), eq(dependencies.successorId, t.id))),
+		db.select({
+			id: tasks.id, bookId: tasks.bookId, code: books.code, stage: stages.name, isReview: stages.isReview, status: tasks.status,
+			startDate: tasks.startDate, endDate: tasks.endDate, durationDays: tasks.durationDays, scheduleState: tasks.scheduleState,
+			sort: stages.sortOrder, bookSort: books.sortOrder,
+		}).from(tasks).innerJoin(books, eq(books.id, tasks.bookId)).innerJoin(stages, eq(stages.id, tasks.stageId)).where(eq(books.seriesId, ser.id)),
+		db.select({ id: dependencies.id, predecessorId: dependencies.predecessorId, successorId: dependencies.successorId, lagDays: dependencies.lagDays })
+			.from(dependencies).innerJoin(tasks, eq(tasks.id, dependencies.successorId)).innerJoin(books, eq(books.id, tasks.bookId)).where(eq(books.seriesId, ser.id)),
+		db.select({ taskId: taskAssignees.taskId, personId: taskAssignees.personId, isLead: taskAssignees.isLead, name: people.displayName })
+			.from(taskAssignees).innerJoin(people, eq(people.id, taskAssignees.personId))
+			.innerJoin(tasks, eq(tasks.id, taskAssignees.taskId)).innerJoin(books, eq(books.id, tasks.bookId)).where(eq(books.seriesId, ser.id)),
 		db.select({ c: taskComments, name: people.displayName }).from(taskComments)
 			.innerJoin(people, eq(people.id, taskComments.authorId)).where(eq(taskComments.taskId, t.id)).orderBy(desc(taskComments.createdAt)),
-		t.windowId ? db.select({ label: windows.label }).from(windows).where(eq(windows.id, t.windowId)).then((r) => r[0] ?? null) : null,
+		db.select({ label: windows.label }).from(windows).where(eq(windows.id, t.windowId ?? '')),
+		db.select({ log: activityLog, actor: people.displayName }).from(activityLog).leftJoin(people, eq(people.id, activityLog.actorId))
+			.where(and(eq(activityLog.entityId, t.id), inArray(activityLog.entity, ['task', 'review'])))
+			.orderBy(desc(activityLog.id)).limit(30),
 	]);
 
-	const isCoord = isAdmin || me?.role === 'coordinator';
+	const assigneeRows = seriesAssignees.filter((a) => a.taskId === t.id);
+	const depRows = seriesDeps.filter((d) => d.predecessorId === t.id || d.successorId === t.id);
+	const byId = new Map(seriesTasks.map((x) => [x.id, x]));
+
+	const isCoord = isAdmin || row.myRole === 'coordinator';
 	const isAssignee = assigneeRows.some((a) => a.personId === personId);
-	const reviewers = await reviewersOf(t);
-	const reviewed = reviewers.reviewerTasks.length > 0;
-	const canReview = t.status === 'in_review' && (isCoord || reviewers.people.some((p) => p.id === personId));
+	// Reviewers: the next review stage's assignees in this book, from the rows already loaded.
+	const bookTasks = new Map(seriesTasks.filter((x) => x.bookId === t.bookId).map((x) => [x.id, { t: x, isReview: x.isReview }]));
+	const reviewerTaskIds = findReviewerTasks(t.id, bookTasks, seriesDeps).map((x) => x.id);
+	const reviewerPeople = [...new Map(seriesAssignees.filter((a) => reviewerTaskIds.includes(a.taskId)).map((a) => [a.personId, { id: a.personId, name: a.name }])).values()];
+	const reviewed = reviewerTaskIds.length > 0;
+	const canReview = t.status === 'in_review' && (isCoord || reviewerPeople.some((p) => p.id === personId));
 
 	// Status moves the viewer may make here: the transition rules, less the moves that go
 	// through review (Approve/Return) or the print approval, and those the review loop forbids.
@@ -75,10 +93,6 @@ export async function taskDetail(locals: App.Locals, taskId: string) {
 		statusOptions = (ALLOWED[t.status] ?? []).filter((to) => !(to === 'in_review' && !reviewed) && !(to === 'done' && t.status === 'in_progress' && reviewed));
 
 	// Linked tasks with their names; the whole series' tasks for adding a link (coordinators only).
-	const seriesTasks = await db.select({ id: tasks.id, code: books.code, stage: stages.name, status: tasks.status, startDate: tasks.startDate, endDate: tasks.endDate, sort: stages.sortOrder, bookSort: books.sortOrder })
-		.from(tasks).innerJoin(books, eq(books.id, tasks.bookId)).innerJoin(stages, eq(stages.id, tasks.stageId))
-		.where(eq(books.seriesId, ser.id));
-	const byId = new Map(seriesTasks.map((x) => [x.id, x]));
 	const link = (depId: string, otherId: string, lagDays: number) => {
 		const o = byId.get(otherId);
 		return { depId, taskId: otherId, label: o ? `${o.code} ${o.stage}` : 'a task', status: o?.status ?? '', startDate: o?.startDate ?? '', endDate: o?.endDate ?? '', lagDays };
@@ -94,12 +108,9 @@ export async function taskDetail(locals: App.Locals, taskId: string) {
 	const days = t.scheduleState === 'scheduled' ? workingDays(t.startDate, t.endDate) : [];
 	let members = memberRows.filter((m) => m.active).map((m) => ({ personId: m.personId, name: m.name, team: m.team || 'No team', capacity: m.capacity, peak: 0, busyDays: 0, overDays: 0 }));
 	if (days.length) {
-		const others = await db.select({ id: tasks.id, startDate: tasks.startDate, endDate: tasks.endDate, durationDays: tasks.durationDays, status: tasks.status, scheduleState: tasks.scheduleState })
-			.from(tasks).innerJoin(books, eq(books.id, tasks.bookId))
-			.where(and(eq(books.seriesId, ser.id)));
-		const near = others.filter((o) => o.id !== t.id && o.startDate <= days.at(-1)! && o.endDate >= days[0]);
-		const as = near.length ? await db.select({ taskId: taskAssignees.taskId, personId: taskAssignees.personId }).from(taskAssignees).where(inArray(taskAssignees.taskId, near.map((o) => o.id))) : [];
-		const grid = workload(near, as, days);
+		const near = seriesTasks.filter((o) => o.id !== t.id && o.startDate <= days.at(-1)! && o.endDate >= days[0]);
+		const nearIds = new Set(near.map((o) => o.id));
+		const grid = workload(near, seriesAssignees.filter((a) => nearIds.has(a.taskId)), days);
 		members = members.map((m) => {
 			const row_ = grid.get(m.personId);
 			const sum = summarize(row_, m.capacity);
@@ -109,17 +120,19 @@ export async function taskDetail(locals: App.Locals, taskId: string) {
 	}
 	members.sort((a, z) => a.team.localeCompare(z.team) || a.name.localeCompare(z.name));
 
-	// This task's history: its own entries and its reviews (comments are listed separately).
-	const logRows = await db.select().from(activityLog)
-		.where(and(eq(activityLog.entityId, t.id), inArray(activityLog.entity, ['task', 'review'])))
-		.orderBy(desc(activityLog.id)).limit(30);
-	const entries = logRows.map((r) => ({ id: r.id, entity: r.entity, entityId: r.entityId, action: r.action, before: r.beforeJson ? JSON.parse(r.beforeJson) : null, after: r.afterJson ? JSON.parse(r.afterJson) : null }));
-	const names = await namesFor(ser.id, entries);
-	const actorIds = [...new Set(logRows.map((r) => r.actorId).filter((x): x is string => !!x))];
-	const actors = actorIds.length ? await db.select({ id: people.id, name: people.displayName }).from(people).where(inArray(people.id, actorIds)) : [];
-	const activity = logRows.map((r, i) => ({
-		id: r.id, at: r.createdAt, actor: actors.find((a) => a.id === r.actorId)?.name ?? 'System', line: describeEntry(entries[i], names),
+	// This task's history (its own entries and its reviews), named from the rows above.
+	const entries = logRows.map(({ log: r }) => ({ id: r.id, entity: r.entity, entityId: r.entityId, action: r.action, before: r.beforeJson ? JSON.parse(r.beforeJson) : null, after: r.afterJson ? JSON.parse(r.afterJson) : null }));
+	const personName = new Map(memberRows.map((m) => [m.personId, m.name]));
+	const names: Names = {
+		task: (id) => { const o = byId.get(id); return o ? `${o.code} ${o.stage}` : undefined; },
+		book: () => b.code, stage: () => s.name, track: () => undefined, window: () => windowRows[0]?.label,
+		person: (id) => personName.get(id),
+	};
+	const activity = logRows.map(({ log: r, actor }, i) => ({
+		id: r.id, at: r.createdAt, actor: actor ?? 'System', line: describeEntry(entries[i], names),
 	}));
+	const windowRow = windowRows[0] ?? null;
+	const reviewers = { people: reviewerPeople };
 
 	return {
 		task: {

@@ -8,6 +8,7 @@ import { parseBody, resolvePerson } from '#lib/server/api-auth.ts';
 import { recentBatches, reversals, stepConflict, taskNames, undoRefusal } from '#lib/server/history.ts';
 import { batchKind } from '#lib/activity/describe.ts';
 import { reverseStep, taskBundle } from '#lib/server/reapply.ts';
+import { forgetHolidays } from '#lib/server/calendar-db.ts';
 import { currentAssignment, sameAssignment, setAssignment } from '#lib/server/assignees.ts';
 
 type Body = { batchId: string; seriesId: string };
@@ -424,5 +425,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		await tx.update(activityLog).set({ revertsBatchId: body.batchId }).where(eq(activityLog.batchId, undoBatch));
 	});
 
+	if (touchesHolidays) forgetHolidays();
 	return json({ restored, undoBatchId: undoBatch });
 };

@@ -1,7 +1,5 @@
 import { redirect } from '@sveltejs/kit';
-import { eq } from 'drizzle-orm';
-import { db } from '#lib/server/db/index.ts';
-import { people } from '#lib/server/db/schema.ts';
+import { currentPerson } from '#lib/server/api-auth.ts';
 import { visibleSeries } from '#lib/server/templates.ts';
 import type { PageServerLoad } from './$types';
 
@@ -9,7 +7,7 @@ import type { PageServerLoad } from './$types';
 // series yet, admins go to "Create your first series"; others are told they are not in one.
 export const load: PageServerLoad = async ({ locals, cookies }) => {
 	if (!locals.user) throw redirect(303, '/login');
-	const me = await db.select({ id: people.id, systemRole: people.systemRole }).from(people).where(eq(people.userId, locals.user.id)).then((r) => r[0]);
+	const me = await currentPerson(locals);
 	const list = await visibleSeries(me?.id ?? null, !!me && me.systemRole !== 'member');
 	const last = cookies.get('bookflow_series');
 	const target = list.find((s) => s.id === last) ?? list[0];

@@ -11,7 +11,7 @@ import { workingDaysBetween } from '#lib/schedule/calendar.ts';
 import { recordAccess } from '#lib/server/print-records.ts';
 import { refreshHolidays } from '#lib/server/calendar-db.ts';
 import { criticalPath } from '#lib/schedule/critical.ts';
-import { reviewersOf } from '#lib/server/reviews.ts';
+import { reviewersOfMany } from '#lib/server/reviews.ts';
 
 // Book detail (spec: Book detail): ISBN and edition, the pipeline as a stepper, every task
 // with dates and variance from the latest baseline, review history, comments, and the
@@ -19,39 +19,48 @@ import { reviewersOf } from '#lib/server/reviews.ts';
 export const load: PageServerLoad = async ({ params, locals }) => {
 	const me = await requireMember(locals, params.series);
 	await refreshHolidays();
-	const ser = await db.select().from(series).where(eq(series.id, params.series)).then((r) => r[0]);
-	if (!ser) throw error(404, 'Series not found');
-	const book = await db.select().from(books)
-		.where(and(eq(books.seriesId, ser.id), eq(books.code, params.code))).then((r) => r[0]);
-	if (!book) throw error(404, `No book ${params.code} in ${ser.name}`);
+	// 1. The series and the book: one query.
+	const found = await db.select({ ser: series, book: books }).from(books).innerJoin(series, eq(series.id, books.seriesId))
+		.where(and(eq(books.seriesId, params.series), eq(books.code, params.code))).then((r) => r[0]);
+	if (!found) throw error(404, `No book ${params.code} in this series`);
+	const { ser, book } = found;
 
-	const [track, trackStageRows, skips, taskRows, windowRows, approval, record] = await Promise.all([
-		db.select().from(tracks).where(eq(tracks.id, book.trackId)).then((r) => r[0] ?? null),
+	// 2. Everything else in one round trip: its track and stages, skips, tasks with their
+	//    assignees, reviews, comments and latest-baseline dates, windows, the print approval and
+	//    record, and the series' tasks and links for the critical path.
+	const bookTasks = db.select({ id: tasks.id }).from(tasks).where(eq(tasks.bookId, book.id));
+	const latestBaseline = db.select({ id: baselines.id }).from(baselines).where(eq(baselines.seriesId, ser.id)).orderBy(desc(baselines.createdAt)).limit(1);
+	const [trackRows, trackStageRows_, skips, taskRows, windowRows, approvalRows, recordRows, baselineRows, baseRows, assignees, reviews, comments, seriesTasks, seriesDeps] = await db.batch([
+		db.select().from(tracks).where(eq(tracks.id, book.trackId)),
 		db.select({ s: stages }).from(stageTracks).innerJoin(stages, eq(stages.id, stageTracks.stageId))
-			.where(eq(stageTracks.trackId, book.trackId)).orderBy(asc(stages.sortOrder)).then((r) => r.map((x) => x.s)),
+			.where(eq(stageTracks.trackId, book.trackId)).orderBy(asc(stages.sortOrder)),
 		db.select().from(bookStageSkips).where(eq(bookStageSkips.bookId, book.id)),
 		db.select({ t: tasks, stage: stages }).from(tasks).innerJoin(stages, eq(stages.id, tasks.stageId))
 			.where(eq(tasks.bookId, book.id)).orderBy(asc(stages.sortOrder)),
 		db.select().from(windows).where(eq(windows.seriesId, ser.id)),
 		db.select({ a: printApprovals, by: people.displayName }).from(printApprovals)
-			.innerJoin(people, eq(people.id, printApprovals.approvedBy)).where(eq(printApprovals.bookId, book.id)).then((r) => r[0] ?? null),
-		db.select().from(printRecords).where(eq(printRecords.bookId, book.id)).then((r) => r[0] ?? null),
+			.innerJoin(people, eq(people.id, printApprovals.approvedBy)).where(eq(printApprovals.bookId, book.id)),
+		db.select().from(printRecords).where(eq(printRecords.bookId, book.id)),
+		// Variance against the latest baseline (Rev 5 on import).
+		db.select().from(baselines).where(eq(baselines.seriesId, ser.id)).orderBy(desc(baselines.createdAt)).limit(1),
+		db.select().from(baselineTasks).where(and(inArray(baselineTasks.baselineId, latestBaseline), inArray(baselineTasks.taskId, bookTasks))),
+		db.select({ a: taskAssignees, name: people.displayName }).from(taskAssignees).innerJoin(people, eq(people.id, taskAssignees.personId))
+			.where(inArray(taskAssignees.taskId, bookTasks)),
+		db.select({ r: reviewCycles, name: people.displayName }).from(reviewCycles).innerJoin(people, eq(people.id, reviewCycles.reviewerId))
+			.where(inArray(reviewCycles.taskId, bookTasks)).orderBy(desc(reviewCycles.createdAt)),
+		db.select({ c: taskComments, name: people.displayName }).from(taskComments).innerJoin(people, eq(people.id, taskComments.authorId))
+			.where(inArray(taskComments.taskId, bookTasks)).orderBy(desc(taskComments.createdAt)),
+		db.select({ id: tasks.id, startDate: tasks.startDate, endDate: tasks.endDate, durationDays: tasks.durationDays, status: tasks.status })
+			.from(tasks).innerJoin(books, eq(books.id, tasks.bookId)).where(eq(books.seriesId, ser.id)),
+		db.select({ predecessorId: dependencies.predecessorId, successorId: dependencies.successorId, lagDays: dependencies.lagDays })
+			.from(dependencies).innerJoin(tasks, eq(tasks.id, dependencies.successorId)).innerJoin(books, eq(books.id, tasks.bookId))
+			.where(eq(books.seriesId, ser.id)),
 	]);
-	const taskIds = taskRows.map((r) => r.t.id);
-
-	// Variance against the latest baseline (Rev 5 on import).
-	const baseline = await db.select().from(baselines).where(eq(baselines.seriesId, ser.id)).orderBy(desc(baselines.createdAt)).limit(1).then((r) => r[0] ?? null);
-	const [baseRows, assignees, reviews, comments] = taskIds.length
-		? await Promise.all([
-			baseline ? db.select().from(baselineTasks).where(and(eq(baselineTasks.baselineId, baseline.id), inArray(baselineTasks.taskId, taskIds))) : [],
-			db.select({ a: taskAssignees, name: people.displayName }).from(taskAssignees).innerJoin(people, eq(people.id, taskAssignees.personId))
-				.where(inArray(taskAssignees.taskId, taskIds)),
-			db.select({ r: reviewCycles, name: people.displayName }).from(reviewCycles).innerJoin(people, eq(people.id, reviewCycles.reviewerId))
-				.where(inArray(reviewCycles.taskId, taskIds)).orderBy(desc(reviewCycles.createdAt)),
-			db.select({ c: taskComments, name: people.displayName }).from(taskComments).innerJoin(people, eq(people.id, taskComments.authorId))
-				.where(inArray(taskComments.taskId, taskIds)).orderBy(desc(taskComments.createdAt)),
-		])
-		: [[], [], [], []];
+	const track = trackRows[0] ?? null;
+	const trackStageRows = trackStageRows_.map((x) => x.s);
+	const approval = approvalRows[0] ?? null;
+	const record = recordRows[0] ?? null;
+	const baseline = baselineRows[0] ?? null;
 
 	const winLabel = new Map(windowRows.map((w) => [w.id, w.label]));
 	const stageOf = new Map(taskRows.map((r) => [r.t.id, r.stage]));
@@ -84,8 +93,9 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 
 	// Who each task in review is waiting on: the next review stage's assignees.
 	const waitingOn: Record<string, string[]> = {};
-	for (const { t } of taskRows.filter((r) => r.t.status === 'in_review'))
-		waitingOn[t.id] = (await reviewersOf(t)).people.map((p) => p.name);
+	const inReview = taskRows.filter((r) => r.t.status === 'in_review').map((r) => r.t);
+	const who = inReview.length ? await reviewersOfMany(inReview) : new Map();
+	for (const t of inReview) waitingOn[t.id] = who.get(t.id)!.people.map((p: { name: string }) => p.name);
 
 	const binding = taskList.find((t) => t.stageKey === 'binding');
 
@@ -93,11 +103,6 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 	// books' tasks count too, since a cross-book link can hold this book up.
 	let criticalIds: string[] = [];
 	if (binding) {
-		const seriesTasks = await db.select({ id: tasks.id, startDate: tasks.startDate, endDate: tasks.endDate, durationDays: tasks.durationDays, status: tasks.status })
-			.from(tasks).innerJoin(books, eq(books.id, tasks.bookId)).where(eq(books.seriesId, ser.id));
-		const seriesDeps = await db.select({ predecessorId: dependencies.predecessorId, successorId: dependencies.successorId, lagDays: dependencies.lagDays })
-			.from(dependencies).innerJoin(tasks, eq(tasks.id, dependencies.successorId)).innerJoin(books, eq(books.id, tasks.bookId))
-			.where(eq(books.seriesId, ser.id));
 		const onPath = criticalPath(seriesTasks, seriesDeps, [binding.id]);
 		criticalIds = taskList.filter((t) => onPath.has(t.id)).map((t) => t.id);
 	}

@@ -3,7 +3,7 @@
  * endpoint, and by undo and redo, which put a task's assignees back as they were.
  */
 import { eq } from 'drizzle-orm';
-import { db } from '#lib/server/db/index.ts';
+import { db, type Write } from '#lib/server/db/index.ts';
 import { taskAssignees } from '#lib/server/db/schema.ts';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -15,6 +15,16 @@ export async function currentAssignment(tx: Tx | typeof db, taskId: string): Pro
 	// Lead first, so "the first person is lead" holds when the list is read back.
 	const personIds = [...rows.filter((a) => a.personId === lead), ...rows.filter((a) => a.personId !== lead)].map((a) => a.personId);
 	return { personIds, leadId: lead };
+}
+
+/** The normalised assignment (no repeats; the lead among them, else the first) and the queries that write it. */
+export function assignmentQueries(taskId: string, a: Assignment) {
+	const personIds = [...new Set(a.personIds)];
+	const leadId = personIds.length ? (a.leadId && personIds.includes(a.leadId) ? a.leadId : personIds[0]) : null;
+	const queries: Write[] = [db.delete(taskAssignees).where(eq(taskAssignees.taskId, taskId))];
+	if (personIds.length)
+		queries.push(db.insert(taskAssignees).values(personIds.map((personId) => ({ taskId, personId, isLead: personId === leadId ? 1 : 0 }))));
+	return { assignment: { personIds, leadId }, queries };
 }
 
 /** Replace the assignees; the lead defaults to the first person, and an empty list unassigns. */

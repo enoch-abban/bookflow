@@ -71,16 +71,16 @@ export async function namesFor(seriesId: string | null, entries: LogEntry[]): Pr
 		if (e.entity === 'person' || e.entity === 'member') personIds.add(e.entityId);
 	}
 	const ids = [...taskIds];
-	const [taskRows, bookRows, stageRows, trackRows, windowRows, peopleRows] = await Promise.all([
-		ids.length
-			? db.select({ id: tasks.id, code: books.code, stage: stages.name }).from(tasks)
-				.innerJoin(books, eq(books.id, tasks.bookId)).innerJoin(stages, eq(stages.id, tasks.stageId)).where(inArray(tasks.id, ids))
-			: [],
-		seriesId ? db.select({ id: books.id, code: books.code }).from(books).where(eq(books.seriesId, seriesId)) : [],
-		seriesId ? db.select({ id: stages.id, name: stages.name }).from(stages).where(eq(stages.seriesId, seriesId)) : [],
-		seriesId ? db.select({ id: tracks.id, name: tracks.name }).from(tracks).where(eq(tracks.seriesId, seriesId)) : [],
-		seriesId ? db.select({ id: windows.id, label: windows.label }).from(windows).where(eq(windows.seriesId, seriesId)) : [],
-		personIds.size ? db.select({ id: people.id, name: people.displayName }).from(people).where(inArray(people.id, [...personIds])) : [],
+	// One round trip for every kind of name (an unused id list matches nothing).
+	const sid = seriesId ?? '';
+	const [taskRows, bookRows, stageRows, trackRows, windowRows, peopleRows] = await db.batch([
+		db.select({ id: tasks.id, code: books.code, stage: stages.name }).from(tasks)
+			.innerJoin(books, eq(books.id, tasks.bookId)).innerJoin(stages, eq(stages.id, tasks.stageId)).where(inArray(tasks.id, ids.length ? ids : [''])),
+		db.select({ id: books.id, code: books.code }).from(books).where(eq(books.seriesId, sid)),
+		db.select({ id: stages.id, name: stages.name }).from(stages).where(eq(stages.seriesId, sid)),
+		db.select({ id: tracks.id, name: tracks.name }).from(tracks).where(eq(tracks.seriesId, sid)),
+		db.select({ id: windows.id, label: windows.label }).from(windows).where(eq(windows.seriesId, sid)),
+		db.select({ id: people.id, name: people.displayName }).from(people).where(inArray(people.id, personIds.size ? [...personIds] : [''])),
 	]);
 	const m = <T extends { id: string }>(rows: T[], f: (r: T) => string) => new Map(rows.map((r) => [r.id, f(r)]));
 	const t = m(taskRows, (r) => `${r.code} ${r.stage}`);
@@ -139,14 +139,15 @@ export async function feed(opts: { seriesId: string; viewer: { personId: string;
 	for (const list of byKey.values()) list.sort((a, b) => a.id.localeCompare(b.id));
 
 	// Undo and redo items are headed by the original change behind them.
-	const origins = new Map<string, Row[]>();
-	for (const [k, l] of byKey) if (l[0].revertsBatchId) origins.set(k, await originalChange(l[0].revertsBatchId));
+	const origins = await originalChanges(new Map([...byKey].filter(([, l]) => l[0].revertsBatchId).map(([k, l]) => [k, l[0].revertsBatchId!])));
 	const revertedRows = [...origins.values()].flat();
 
 	const allEntries = [...byKey.values()].flat().concat(revertedRows).map(toEntry);
-	const names = await namesFor(opts.seriesId, allEntries);
-	const reversed = await reversals(batchIds);
-	const recent = await recentBatches(opts.viewer.personId, opts.seriesId);
+	const [names, reversed, recent] = await Promise.all([
+		namesFor(opts.seriesId, allEntries),
+		reversals(batchIds),
+		recentBatches(opts.viewer.personId, opts.seriesId),
+	]);
 	const actorIds = [...new Set([...byKey.values()].map((l) => l[0].actorId).filter((x): x is string => !!x)
 		.concat([...reversed.values()].map((r) => r.actorId).filter((x): x is string => !!x)))];
 	const actors = actorIds.length ? await db.select({ id: people.id, name: people.displayName }).from(people).where(inArray(people.id, actorIds)) : [];
@@ -197,6 +198,34 @@ export async function originalChange(batchId: string): Promise<Row[]> {
 		id = rows[0].revertsBatchId;
 	}
 	return [];
+}
+
+/**
+ * originalChange for many items at once: follows every chain together, one query per level
+ * (an undo of a redo of an undo is three levels), instead of one per item and level.
+ */
+export async function originalChanges(start: Map<string, string>): Promise<Map<string, Row[]>> {
+	const out = new Map<string, Row[]>();
+	let pending = new Map(start); // item key -> batch to look at next
+	for (let hops = 0; pending.size && hops < 50; hops++) {
+		const ids = [...new Set(pending.values())];
+		const rows = await db.select().from(activityLog).where(inArray(activityLog.batchId, ids));
+		const byBatch = new Map<string, Row[]>();
+		for (const r of rows) byBatch.set(r.batchId!, [...(byBatch.get(r.batchId!) ?? []), r]);
+		const next = new Map<string, string>();
+		for (const [key, id] of pending) {
+			const list = byBatch.get(id);
+			if (!list?.length) {
+				out.set(key, []);
+				continue;
+			}
+			const kind = batchKind(list.map(toEntry));
+			if (kind === 'change' || !list[0].revertsBatchId) out.set(key, list.sort((a, b) => a.id.localeCompare(b.id)));
+			else next.set(key, list[0].revertsBatchId);
+		}
+		pending = next;
+	}
+	return out;
 }
 
 /** "G3 Layout, G4 Layout" for the tasks an undo conflict names. */

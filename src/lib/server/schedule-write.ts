@@ -4,7 +4,7 @@
  */
 import { eq } from 'drizzle-orm';
 import { ulid } from 'ulid';
-import { db } from '#lib/server/db/index.ts';
+import { db, type Write } from '#lib/server/db/index.ts';
 import { activityLog, tasks } from '#lib/server/db/schema.ts';
 import type { SchedTask } from './scheduler.ts';
 import type { RefitResult } from './refit.ts';
@@ -52,6 +52,33 @@ export async function writeTaskChanges(
 		out.push({ id: c.id, ...after });
 	}
 	return out;
+}
+
+/**
+ * The same writes as writeTaskChanges, as queries for writeAll: one round trip with the
+ * rest of the change instead of two per task.
+ */
+export function taskChangeQueries(
+	opts: { seriesId: string; actorId: string; batchId: string; now: string; original: Map<string, SchedTask>; changes: TaskChange[] }
+) {
+	const queries: Write[] = [];
+	const written = [];
+	for (const c of opts.changes) {
+		const orig = opts.original.get(c.id)!;
+		const after = {
+			startDate: c.startDate, endDate: c.endDate, durationDays: c.durationDays ?? orig.durationDays,
+			windowId: c.windowId, scheduleState: c.scheduleState ?? 'scheduled', version: orig.version + 1,
+		};
+		queries.push(db.update(tasks).set({ ...after, updatedAt: opts.now }).where(eq(tasks.id, c.id)));
+		queries.push(db.insert(activityLog).values({
+			id: ulid(), seriesId: opts.seriesId, actorId: opts.actorId,
+			entity: 'task', entityId: c.id, action: c.action,
+			beforeJson: JSON.stringify(snapshot(orig)), afterJson: JSON.stringify(after),
+			batchId: opts.batchId, createdAt: opts.now,
+		}));
+		written.push({ id: c.id, ...after });
+	}
+	return { queries, written };
 }
 
 /** Turn a refit result into task changes for writeTaskChanges. */

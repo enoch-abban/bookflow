@@ -8,26 +8,44 @@
 import { error, json } from '@sveltejs/kit';
 import { and, eq, inArray } from 'drizzle-orm';
 import { ulid } from 'ulid';
-import { db } from '#lib/server/db/index.ts';
+import { db, writeAll } from '#lib/server/db/index.ts';
 import { activityLog, books, dependencies, people, reviewCycles, seriesMembers, stages, taskAssignees, tasks } from '#lib/server/db/schema.ts';
 import { resolvePerson } from './api-auth.ts';
 
 type TaskRow = typeof tasks.$inferSelect;
 
+type TaskRef = Pick<TaskRow, 'id' | 'bookId' | 'stageId'>;
+
 /**
- * The review-stage tasks that review `task`: the nearest ones downstream in the same
- * book that are not Done. Empty for review-stage tasks and for work with no review after it.
+ * The review-stage tasks that review each task: the nearest ones downstream in the same book
+ * that are not Done. Empty for review-stage tasks and for work with no review after it.
+ * Any number of tasks costs two queries (their books' tasks, then those tasks' links).
  */
-export async function reviewerTasks(task: Pick<TaskRow, 'id' | 'bookId' | 'stageId'>): Promise<TaskRow[]> {
+export async function reviewerTasksMany(list: TaskRef[]): Promise<Map<string, TaskRow[]>> {
+	const out = new Map<string, TaskRow[]>(list.map((t) => [t.id, []]));
+	const bookIds = [...new Set(list.map((t) => t.bookId))];
+	if (!bookIds.length) return out;
 	const own = await db.select({ t: tasks, isReview: stages.isReview }).from(tasks)
-		.innerJoin(stages, eq(stages.id, tasks.stageId)).where(eq(tasks.bookId, task.bookId));
+		.innerJoin(stages, eq(stages.id, tasks.stageId)).where(inArray(tasks.bookId, bookIds));
 	const byId = new Map(own.map((r) => [r.t.id, r]));
-	if (byId.get(task.id)?.isReview) return [];
 	const ids = own.map((r) => r.t.id);
 	const deps = ids.length ? await db.select().from(dependencies).where(inArray(dependencies.predecessorId, ids)) : [];
 
-	// Breadth-first: the first layer that holds review tasks wins.
-	let layer = [task.id];
+	for (const task of list) out.set(task.id, findReviewerTasks(task.id, byId, deps));
+	return out;
+}
+
+/**
+ * The search itself, over rows already loaded: breadth-first from the task through its book's
+ * links; the first layer that holds unfinished review tasks wins.
+ */
+export function findReviewerTasks<T extends { id: string; status: string }>(
+	taskId: string,
+	byId: Map<string, { t: T; isReview: number }>,
+	deps: { predecessorId: string; successorId: string }[],
+): T[] {
+	if (byId.get(taskId)?.isReview) return [];
+	let layer = [taskId];
 	const seen = new Set(layer);
 	while (layer.length) {
 		const next = deps.filter((d) => layer.includes(d.predecessorId) && byId.has(d.successorId) && !seen.has(d.successorId)).map((d) => d.successorId);
@@ -39,13 +57,30 @@ export async function reviewerTasks(task: Pick<TaskRow, 'id' | 'bookId' | 'stage
 	return [];
 }
 
+export async function reviewerTasks(task: TaskRef): Promise<TaskRow[]> {
+	return (await reviewerTasksMany([task])).get(task.id) ?? [];
+}
+
+/** People who may approve or return each task: its reviewer tasks' assignees. Three queries in all. */
+export async function reviewersOfMany(list: TaskRef[]) {
+	const rtBy = await reviewerTasksMany(list);
+	const rtIds = [...new Set([...rtBy.values()].flat().map((t) => t.id))];
+	const rows = rtIds.length
+		? await db.select({ taskId: taskAssignees.taskId, id: people.id, name: people.displayName }).from(taskAssignees)
+			.innerJoin(people, eq(people.id, taskAssignees.personId)).where(inArray(taskAssignees.taskId, rtIds))
+		: [];
+	const out = new Map<string, { reviewerTasks: TaskRow[]; people: { id: string; name: string }[] }>();
+	for (const t of list) {
+		const rt = rtBy.get(t.id) ?? [];
+		const ps = rows.filter((r) => rt.some((x) => x.id === r.taskId)).map(({ id, name }) => ({ id, name }));
+		out.set(t.id, { reviewerTasks: rt, people: [...new Map(ps.map((p) => [p.id, p])).values()] });
+	}
+	return out;
+}
+
 /** People who may approve or return `task`: its reviewer tasks' assignees. */
-export async function reviewersOf(task: Pick<TaskRow, 'id' | 'bookId' | 'stageId'>) {
-	const rt = await reviewerTasks(task);
-	if (!rt.length) return { reviewerTasks: rt, people: [] as { id: string; name: string }[] };
-	const rows = await db.select({ id: people.id, name: people.displayName }).from(taskAssignees)
-		.innerJoin(people, eq(people.id, taskAssignees.personId)).where(inArray(taskAssignees.taskId, rt.map((t) => t.id)));
-	return { reviewerTasks: rt, people: [...new Map(rows.map((r) => [r.id, r])).values()] };
+export async function reviewersOf(task: TaskRef) {
+	return (await reviewersOfMany([task])).get(task.id)!;
 }
 
 /** Status rules the review loop adds; shared by the API and My tasks. */
@@ -84,15 +119,16 @@ export async function recordReview(opts: {
 		? { status: 'done' as const, completedAt: now }
 		: { status: 'returned' as const, iteration: task.iteration + 1 };
 	const cycle = { id: ulid(), taskId: task.id, iteration: task.iteration, reviewerId: personId, outcome: opts.outcome, comments: summary, createdAt: now };
-	const updated = await db.transaction(async (tx) => {
-		await tx.insert(reviewCycles).values(cycle);
-		const [t] = await tx.update(tasks).set({ ...updates, version: task.version + 1, updatedAt: now }).where(eq(tasks.id, task.id)).returning();
-		await tx.insert(activityLog).values({
+	// One round trip: the review, the task and the log entry, all or nothing.
+	const [, rows] = await writeAll([
+		db.insert(reviewCycles).values(cycle),
+		db.update(tasks).set({ ...updates, version: task.version + 1, updatedAt: now }).where(eq(tasks.id, task.id)).returning(),
+		db.insert(activityLog).values({
 			id: ulid(), seriesId, actorId: personId, entity: 'review', entityId: task.id, action: opts.outcome,
 			beforeJson: JSON.stringify({ status: task.status, iteration: task.iteration, version: task.version }),
 			afterJson: JSON.stringify({ ...updates, version: task.version + 1, summary }), createdAt: now,
-		});
-		return t;
-	});
+		}),
+	]);
+	const updated = (rows as TaskRow[])[0];
 	return json({ task: updated, review: cycle });
 }

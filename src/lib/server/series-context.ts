@@ -4,37 +4,33 @@
  */
 import { error } from '@sveltejs/kit';
 import { db } from '#lib/server/db/index.ts';
-import { books, tasks, dependencies, series, stages, windows } from '#lib/server/db/schema.ts';
-import { asc, eq, inArray } from 'drizzle-orm';
+import { books, tasks, dependencies, holidays, series, stages, windows } from '#lib/server/db/schema.ts';
+import { asc, eq } from 'drizzle-orm';
 import type { SchedTask, SchedDep, WindowRules } from './scheduler.ts';
 import type { Win } from '../schedule/windows.ts';
-import { refreshHolidays } from './calendar-db.ts';
+import { useHolidays } from './calendar-db.ts';
 
 export type SeriesContext = Awaited<ReturnType<typeof loadSeriesContext>>;
 
 export async function loadSeriesContext(seriesId: string) {
-	await refreshHolidays();
-	const ser = await db.select().from(series).where(eq(series.id, seriesId)).then(r => r[0]);
-	if (!ser) throw error(404, 'Series not found');
-
-	const [booksData, windowRows] = await Promise.all([
+	// One round trip: the current holidays (dates are about to be written), the series, its
+	// books, windows, tasks and links.
+	const [holidayRows, serRows, booksData, windowRows, rows, depsData] = await db.batch([
+		db.select().from(holidays).orderBy(asc(holidays.date)),
+		db.select().from(series).where(eq(series.id, seriesId)),
 		db.select({ id: books.id, code: books.code, archivedAt: books.archivedAt }).from(books).where(eq(books.seriesId, seriesId)),
 		db.select().from(windows).where(eq(windows.seriesId, seriesId)).orderBy(asc(windows.startDate)),
+		db.select({ task: tasks, ignoresWindows: stages.ignoresWindows, stageKey: stages.key, stageArchived: stages.archivedAt })
+			.from(tasks).innerJoin(stages, eq(stages.id, tasks.stageId)).innerJoin(books, eq(books.id, tasks.bookId))
+			.where(eq(books.seriesId, seriesId)),
+		db.select({ id: dependencies.id, predecessorId: dependencies.predecessorId, successorId: dependencies.successorId, lagDays: dependencies.lagDays })
+			.from(dependencies).innerJoin(tasks, eq(tasks.id, dependencies.successorId)).innerJoin(books, eq(books.id, tasks.bookId))
+			.where(eq(books.seriesId, seriesId)),
 	]);
-	const bookIds = booksData.map(b => b.id);
-
-	const rows = bookIds.length
-		? await db.select({ task: tasks, ignoresWindows: stages.ignoresWindows, stageKey: stages.key, stageArchived: stages.archivedAt })
-			.from(tasks)
-			.innerJoin(stages, eq(stages.id, tasks.stageId))
-			.where(inArray(tasks.bookId, bookIds))
-		: [];
+	useHolidays(holidayRows);
+	const ser = serRows[0];
+	if (!ser) throw error(404, 'Series not found');
 	const tasksData = rows.map(r => r.task);
-
-	const taskIds = tasksData.map(t => t.id);
-	const depsData = taskIds.length
-		? await db.select().from(dependencies).where(inArray(dependencies.successorId, taskIds))
-		: [];
 
 	const taskMap = new Map<string, SchedTask>(
 		rows.map(({ task: t, ignoresWindows }) => [t.id, {

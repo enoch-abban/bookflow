@@ -12,6 +12,7 @@
  */
 import { and, eq, inArray, or } from 'drizzle-orm';
 import { currentAssignment, setAssignment } from '#lib/server/assignees.ts';
+import { forgetHolidays } from '#lib/server/calendar-db.ts';
 import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
 import {
@@ -309,6 +310,7 @@ export async function reverseStep(opts: { sourceBatchId: string; entries: Row[];
 		}
 	});
 
+	if (ops.some((o) => o.entity === 'holiday')) forgetHolidays();
 	const restored = changed.length ? await db.select().from(tasks).where(inArray(tasks.id, [...new Set(changed)])) : [];
 	return { ok: true as const, batchId, restored };
 }

@@ -10,7 +10,7 @@ import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
 import { activityLog, holidays, series } from '#lib/server/db/schema.ts';
 import { withHolidays } from '../schedule/calendar.ts';
-import { refreshHolidays } from './calendar-db.ts';
+import { forgetHolidays, refreshHolidays } from './calendar-db.ts';
 import { loadSeriesContext } from './series-context.ts';
 import { refit, type RefitResult } from './refit.ts';
 import type { SchedTask } from './scheduler.ts';
@@ -20,7 +20,7 @@ export type HolidayOp = { kind: 'add'; date: string; label: string } | { kind: '
 
 export async function changeHoliday(opts: { op: HolidayOp; actorId: string; preview: boolean }) {
 	const { op } = opts;
-	const current = await refreshHolidays();
+	const current = await refreshHolidays({ fresh: true });
 	const existing = current.find((h) => h.date === op.date);
 	if (op.kind === 'add' && existing) throw error(409, `${op.date} is already a holiday (${existing.label}).`);
 	if (op.kind === 'remove' && !existing) throw error(404, `${op.date} is not a holiday.`);
@@ -67,6 +67,7 @@ export async function changeHoliday(opts: { op: HolidayOp; actorId: string; prev
 			if (p.result.changes.length)
 				await writeTaskChanges(tx, { seriesId: p.ser.id, actorId: opts.actorId, batchId, now, original: p.original, changes: refitChanges(p.result) });
 	});
-	await refreshHolidays();
+	forgetHolidays();
+	await refreshHolidays({ fresh: true });
 	return { preview: false as const, ...summary, batchId };
 }

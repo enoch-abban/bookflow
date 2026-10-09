@@ -2,7 +2,7 @@ import type { PageServerLoad } from './$types';
 import { error } from '@sveltejs/kit';
 import { db } from '#lib/server/db/index.ts';
 import { series as seriesTable, stages, books, tasks, taskAssignees, people, seriesMembers } from '#lib/server/db/schema.ts';
-import { and, eq, inArray, asc, isNull } from 'drizzle-orm';
+import { and, eq, inArray, asc, isNull, or } from 'drizzle-orm';
 import { refreshHolidays } from '#lib/server/calendar-db.ts';
 import { requireMember } from '#lib/server/api-auth.ts';
 import { isWorkingDay } from '#lib/schedule/calendar.ts';
@@ -24,21 +24,28 @@ export const load: PageServerLoad = async ({ params, url, locals }) => {
 	const sid = params.series;
 	await requireMember(locals, sid);
 
-	const [ser] = await db.select().from(seriesTable).where(eq(seriesTable.id, sid));
-	if (!ser) throw error(404, 'Series not found');
 	await refreshHolidays();
-
-	const [stagesData, booksData, membersData] = await Promise.all([
+	// One round trip: the series, live stages and books, members, tasks, their assignees, and
+	// everyone who gets a row (members plus anyone assigned here).
+	const liveTask = and(eq(books.seriesId, sid), isNull(books.archivedAt), isNull(stages.archivedAt));
+	const [serRows, stagesData, booksData, membersData, taskRows, assigneeRows, peopleData] = await db.batch([
+		db.select().from(seriesTable).where(eq(seriesTable.id, sid)),
 		db.select().from(stages).where(and(eq(stages.seriesId, sid), isNull(stages.archivedAt))),
 		db.select().from(books).where(and(eq(books.seriesId, sid), isNull(books.archivedAt))).orderBy(asc(books.sortOrder)),
 		db.select().from(seriesMembers).where(eq(seriesMembers.seriesId, sid)),
+		db.select({ t: tasks }).from(tasks).innerJoin(books, eq(books.id, tasks.bookId)).innerJoin(stages, eq(stages.id, tasks.stageId)).where(liveTask),
+		db.select({ a: taskAssignees }).from(taskAssignees)
+			.innerJoin(tasks, eq(tasks.id, taskAssignees.taskId)).innerJoin(books, eq(books.id, tasks.bookId)).innerJoin(stages, eq(stages.id, tasks.stageId)).where(liveTask),
+		db.select().from(people).where(or(
+			inArray(people.id, db.select({ id: seriesMembers.personId }).from(seriesMembers).where(eq(seriesMembers.seriesId, sid))),
+			inArray(people.id, db.select({ id: taskAssignees.personId }).from(taskAssignees)
+				.innerJoin(tasks, eq(tasks.id, taskAssignees.taskId)).innerJoin(books, eq(books.id, tasks.bookId)).where(eq(books.seriesId, sid))),
+		)),
 	]);
-	const bookIds = booksData.map((b) => b.id);
-	const tasksData = bookIds.length && stagesData.length
-		? await db.select().from(tasks).where(and(inArray(tasks.bookId, bookIds), inArray(tasks.stageId, stagesData.map((s) => s.id))))
-		: [];
-	const taskIds = tasksData.map((t) => t.id);
-	const assigneesData = taskIds.length ? await db.select().from(taskAssignees).where(inArray(taskAssignees.taskId, taskIds)) : [];
+	const ser = serRows[0];
+	if (!ser) throw error(404, 'Series not found');
+	const tasksData = taskRows.map((r) => r.t);
+	const assigneesData = assigneeRows.map((r) => r.a);
 
 	// Range: eight weeks from a Monday. Default is this week, or the plan's first week if it starts later.
 	const today = new Date().toISOString().slice(0, 10);
@@ -55,8 +62,6 @@ export const load: PageServerLoad = async ({ params, url, locals }) => {
 	const grid = workload(tasksData, assigneesData, days, { includeDone });
 
 	// Rows: every member, plus anyone assigned work here who is not a member (capacity 1).
-	const personIds = [...new Set([...membersData.map((m) => m.personId), ...assigneesData.map((a) => a.personId)])];
-	const peopleData = personIds.length ? await db.select().from(people).where(inArray(people.id, personIds)) : [];
 	const memberOf = new Map(membersData.map((m) => [m.personId, m]));
 	const rows = peopleData
 		.map((p) => {

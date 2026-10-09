@@ -1,9 +1,9 @@
 import type { RequestHandler } from './$types';
 import { json, error } from '@sveltejs/kit';
 import { ulid } from 'ulid';
-import { db } from '#lib/server/db/index.ts';
-import { tasks, taskAssignees, activityLog, seriesMembers } from '#lib/server/db/schema.ts';
-import { currentAssignment, setAssignment } from '#lib/server/assignees.ts';
+import { db, writeAll } from '#lib/server/db/index.ts';
+import { tasks, activityLog, seriesMembers } from '#lib/server/db/schema.ts';
+import { assignmentQueries, currentAssignment } from '#lib/server/assignees.ts';
 import { and, eq, inArray } from 'drizzle-orm';
 import { requireCoord, parseBody, versionConflict, loadTaskWithSeries } from '#lib/server/api-auth.ts';
 import { assigneesSchema, parseOr400 } from '#lib/server/validation.ts';
@@ -33,18 +33,19 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const now = new Date().toISOString();
 	const batchId = ulid();
 
-	await db.transaction(async (tx) => {
-		const after = await setAssignment(tx, id, { personIds, leadId });
-		await tx.update(tasks).set({ version: task.version + 1, updatedAt: now }).where(eq(tasks.id, id));
-		await tx.insert(activityLog).values({
+	// One round trip: the assignees, the task's version and the log entry, all or nothing.
+	const { assignment: after, queries } = assignmentQueries(id, { personIds, leadId });
+	const results = await writeAll([
+		...queries,
+		db.update(tasks).set({ version: task.version + 1, updatedAt: now }).where(eq(tasks.id, id)).returning(),
+		db.insert(activityLog).values({
 			id: ulid(), seriesId, actorId: personId, entity: 'task', entityId: id, action: 'reassign',
 			beforeJson: JSON.stringify({ ...before, version: task.version }),
 			afterJson: JSON.stringify({ ...after, version: task.version + 1 }),
 			batchId, createdAt: now,
-		});
-	});
-
-	const updated = await db.select().from(tasks).where(eq(tasks.id, id)).then((r) => r[0]);
-	const assignees = await db.select().from(taskAssignees).where(eq(taskAssignees.taskId, id));
+		}),
+	]);
+	const updated = (results[queries.length] as (typeof tasks.$inferSelect)[])[0];
+	const assignees = after.personIds.map((pid) => ({ taskId: id, personId: pid, isLead: pid === after.leadId ? 1 : 0 }));
 	return json({ task: updated, assignees, batchId });
 };

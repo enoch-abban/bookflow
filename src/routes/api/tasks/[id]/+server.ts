@@ -1,7 +1,7 @@
 import type { RequestHandler } from './$types';
 import { json, error } from '@sveltejs/kit';
 import { ulid } from 'ulid';
-import { db } from '#lib/server/db/index.ts';
+import { db, writeAll, type Write } from '#lib/server/db/index.ts';
 import { tasks, taskAssignees, dependencies, activityLog, people, seriesMembers } from '#lib/server/db/schema.ts';
 import { eq, and } from 'drizzle-orm';
 import { parseBody, versionConflict, loadTaskWithSeries, resolvePerson } from '#lib/server/api-auth.ts';
@@ -9,7 +9,7 @@ import { isAllowedTransition } from '#lib/server/scheduler.ts';
 import { statusGuard, statusUpdates } from '#lib/server/task-status.ts';
 import { loadSeriesContext } from '#lib/server/series-context.ts';
 import { refit } from '#lib/server/refit.ts';
-import { refitChanges, refitReport, writeTaskChanges } from '#lib/server/schedule-write.ts';
+import { refitChanges, refitReport, taskChangeQueries } from '#lib/server/schedule-write.ts';
 import { taskDetail } from '#lib/server/task-detail.ts';
 
 // ── PATCH /api/tasks/:id ─────────────────────────────────────────────────────
@@ -98,9 +98,10 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	updates.updatedAt = now;
 
 	const batchId = ulid();
-	await db.transaction(async tx => {
-		await tx.update(tasks).set(updates).where(eq(tasks.id, id));
-		await tx.insert(activityLog).values({
+	// One round trip: the task, its log entry and any refit, all or nothing.
+	const queries: Write[] = [
+		db.update(tasks).set(updates).where(eq(tasks.id, id)).returning(),
+		db.insert(activityLog).values({
 			id:         ulid(),
 			seriesId,
 			actorId:    personId,
@@ -111,17 +112,15 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 			afterJson:  JSON.stringify({ ...updates }),
 			batchId,
 			createdAt:  now,
-		});
-
-		if (result?.changes.length) {
-			// This task's version was just bumped above.
-			original!.set(id, { ...original!.get(id)!, version: task.version + 1 });
-			await writeTaskChanges(tx, { seriesId, actorId: personId, batchId, now, original: original!, changes: refitChanges(result) });
-		}
-	});
-
-	// Re-fetch updated task
-	const updated = await db.select().from(tasks).where(eq(tasks.id, id)).then(r => r[0]);
+		}),
+	];
+	if (result?.changes.length) {
+		// This task's version is bumped by the first query.
+		original!.set(id, { ...original!.get(id)!, version: task.version + 1 });
+		queries.push(...taskChangeQueries({ seriesId, actorId: personId, batchId, now, original: original!, changes: refitChanges(result) }).queries);
+	}
+	const [rows] = await writeAll(queries);
+	const updated = (rows as (typeof tasks.$inferSelect)[])[0];
 	return json({ task: updated, report, batchId });
 };
 

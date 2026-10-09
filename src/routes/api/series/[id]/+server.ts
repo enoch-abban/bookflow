@@ -2,13 +2,13 @@ import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 import { ulid } from 'ulid';
 import { eq } from 'drizzle-orm';
-import { db } from '#lib/server/db/index.ts';
+import { db, writeAll, type Write } from '#lib/server/db/index.ts';
 import { activityLog, series } from '#lib/server/db/schema.ts';
 import { parseBody, requireCoord } from '#lib/server/api-auth.ts';
 import { parseOr400, updateSeriesSchema } from '#lib/server/validation.ts';
 import { loadSeriesContext } from '#lib/server/series-context.ts';
 import { refit } from '#lib/server/refit.ts';
-import { refitChanges, refitReport, writeTaskChanges } from '#lib/server/schedule-write.ts';
+import { refitChanges, refitReport, taskChangeQueries } from '#lib/server/schedule-write.ts';
 
 type SeriesRow = typeof series.$inferSelect;
 
@@ -58,19 +58,21 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 
 	const batchId = ulid();
 	const now = new Date().toISOString();
-	const updated = await db.transaction(async (tx) => {
-		const [row] = await tx.update(series).set(changed).where(eq(series.id, before.id)).returning();
-		await tx.insert(activityLog).values({
+	// One round trip: the settings, their log entry and any refit, all or nothing.
+	const queries: Write[] = [
+		db.update(series).set(changed).where(eq(series.id, before.id)).returning(),
+		db.insert(activityLog).values({
 			id: ulid(), seriesId: before.id, actorId: personId,
 			entity: 'series', entityId: before.id, action: 'update',
 			beforeJson: JSON.stringify(Object.fromEntries(Object.keys(changed).map((k) => [k, before[k as keyof SeriesRow]]))),
 			afterJson: JSON.stringify(changed),
 			batchId, createdAt: now,
-		});
-		if (result?.changes.length)
-			await writeTaskChanges(tx, { seriesId: before.id, actorId: personId, batchId, now, original: original!, changes: refitChanges(result) });
-		return row;
-	});
+		}),
+	];
+	if (result?.changes.length)
+		queries.push(...taskChangeQueries({ seriesId: before.id, actorId: personId, batchId, now, original: original!, changes: refitChanges(result) }).queries);
+	const [rows] = await writeAll(queries);
+	const updated = (rows as SeriesRow[])[0];
 
 	return json({ series: updated, report, batchId });
 };

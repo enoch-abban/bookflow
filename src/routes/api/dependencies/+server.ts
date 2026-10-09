@@ -1,10 +1,10 @@
 import type { RequestHandler } from './$types';
 import { json, error } from '@sveltejs/kit';
 import { ulid } from 'ulid';
-import { db } from '#lib/server/db/index.ts';
+import { db, writeAll } from '#lib/server/db/index.ts';
 import { dependencies, tasks, books, activityLog } from '#lib/server/db/schema.ts';
-import { writeTaskChanges } from '#lib/server/schedule-write.ts';
-import { eq, inArray } from 'drizzle-orm';
+import { taskChangeQueries } from '#lib/server/schedule-write.ts';
+import { inArray } from 'drizzle-orm';
 import { requireCoord, parseBody } from '#lib/server/api-auth.ts';
 import { propagate } from '#lib/server/scheduler.ts';
 import { loadSeriesContext } from '#lib/server/series-context.ts';
@@ -67,15 +67,19 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const pushed = propagate(new Set([body.predecessorId]), ctx.taskMap, allDeps, ctx.rules);
 	const batchId = ulid();
 
-	const changed = await db.transaction(async tx => {
-		await tx.insert(dependencies).values({
+	// One round trip: the link, its log entry and every task it pushed.
+	const moves = taskChangeQueries({
+		seriesId, actorId: personId, batchId, now, original,
+		changes: [...pushed].map(([id, p]) => ({ id, ...p, windowId: p.windowId ?? null, action: p.scheduleState === 'unscheduled' ? 'unschedule' : 'move' })),
+	});
+	const [deps] = await writeAll([
+		db.insert(dependencies).values({
 			id:            depId,
 			predecessorId: body.predecessorId,
 			successorId:   body.successorId,
 			lagDays:       lag,
-		});
-
-		await tx.insert(activityLog).values({
+		}).returning(),
+		db.insert(activityLog).values({
 			id:        ulid(),
 			seriesId,
 			actorId:   personId,
@@ -85,14 +89,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			afterJson: JSON.stringify({ id: depId, predecessorId: body.predecessorId, successorId: body.successorId, lagDays: lag }),
 			batchId,
 			createdAt: now,
-		});
-
-		return writeTaskChanges(tx, {
-			seriesId, actorId: personId, batchId, now, original,
-			changes: [...pushed].map(([id, p]) => ({ id, ...p, windowId: p.windowId ?? null, action: p.scheduleState === 'unscheduled' ? 'unschedule' : 'move' })),
-		});
-	});
-
-	const dep = await db.select().from(dependencies).where(eq(dependencies.id, depId)).then(r => r[0]);
-	return json({ dependency: dep, changed }, { status: 201 });
+		}),
+		...moves.queries,
+	]);
+	const dep = (deps as (typeof dependencies.$inferSelect)[])[0];
+	return json({ dependency: dep, changed: moves.written }, { status: 201 });
 };

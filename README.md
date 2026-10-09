@@ -87,6 +87,16 @@ Open the printed link, set a name and password, and sign in. The sign-in code ap
 
 The schema lives in `src/lib/server/db/schema.ts`. Change it, generate a named migration with `npm run db:generate -- --name <what_changed>`, and apply it with `npm run db:migrate`. Commit the generated SQL and the files under `drizzle/meta`.
 
+## Keeping it fast
+
+In production every query is a network round trip to Turso, so round trips, not query size, decide how fast a page feels. Each response carries a `Server-Timing` header (`db`) with the number of round trips and their total time; see it in the browser's network panel.
+
+- Read independent data in one `db.batch([...])`, and filter by series with joins rather than first fetching ids.
+- Write with `writeAll([...])` from `src/lib/server/db/index.ts`: one round trip, applied all or nothing. Keep `db.transaction` for the few writes that must read inside the transaction (undo, pipeline restructuring).
+- The current person and their series membership are looked up once per request (`currentPerson`, `requireMember`), sessions are cached in a signed cookie for 5 minutes, and holidays for 30 seconds.
+
+To see it locally, run the dev server with `DB_SIMULATED_LATENCY_MS=15` to add a delay per round trip, and `DB_TRACE=1` to print each round trip's SQL.
+
 ## How it fits together
 
 - **Working days.** Monday to Friday, minus the holidays set under Calendar. All scheduling counts working days (`src/lib/schedule/calendar.ts`).

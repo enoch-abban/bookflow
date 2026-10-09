@@ -16,16 +16,51 @@ export type { SystemRole };
  */
 export type PersonCtx = { personId: string; isAdmin: boolean; systemRole: SystemRole; role: string };
 
-/** Resolve the current user to their person record (or 401/403). Read on every request, so a role change takes effect at once. */
+// The signed-in person, looked up once per request however many checks ask for it.
+const personCache = new WeakMap<App.Locals, Promise<typeof people.$inferSelect | null>>();
+
+/** The signed-in person's record, or null; one database round trip per request at most. */
+export function currentPerson(locals: App.Locals): Promise<typeof people.$inferSelect | null> {
+	if (!locals.user) return Promise.resolve(null);
+	let found = personCache.get(locals);
+	if (!found) {
+		const userId = locals.user.id;
+		found = db.select().from(people).where(eq(people.userId, userId)).then(r => r[0] ?? null);
+		personCache.set(locals, found);
+	}
+	return found;
+}
+
+/**
+ * Resolve the current user to their person record (or 401/403). Read on every request, so a role
+ * change takes effect at once, and a deactivated person is refused even while their session
+ * cookie is still cached.
+ */
 export async function resolvePerson(locals: App.Locals): Promise<PersonCtx & { personRow: typeof people.$inferSelect }> {
 	if (!locals.user) throw error(401, 'Unauthenticated');
 
-	const row = await db.select().from(people).where(eq(people.userId, locals.user.id)).then(r => r[0] ?? null);
+	const row = await currentPerson(locals);
 	if (!row) throw error(403, 'No person record for this account');
+	if (!row.active) throw error(403, 'This account has been deactivated.');
 
 	const systemRole = row.systemRole;
 	const isAdmin = systemRole !== 'member';
 	return { personId: row.id, isAdmin, systemRole, role: isAdmin ? systemRole : 'contributor', personRow: row };
+}
+
+// Series memberships looked up once per request and series.
+const memberCache = new WeakMap<App.Locals, Map<string, Promise<typeof seriesMembers.$inferSelect | null>>>();
+function membership(locals: App.Locals, seriesId: string, personId: string) {
+	let bySeries = memberCache.get(locals);
+	if (!bySeries) memberCache.set(locals, (bySeries = new Map()));
+	let found = bySeries.get(seriesId);
+	if (!found) {
+		found = db.select().from(seriesMembers)
+			.where(and(eq(seriesMembers.seriesId, seriesId), eq(seriesMembers.personId, personId)))
+			.then(r => r[0] ?? null);
+		bySeries.set(seriesId, found);
+	}
+	return found;
 }
 
 /** Require admin, manager (coordinator on every series) or series coordinator. */
@@ -33,10 +68,7 @@ export async function requireCoord(locals: App.Locals, seriesId: string): Promis
 	const { personId, isAdmin, systemRole } = await resolvePerson(locals);
 	if (isAdmin) return { personId, isAdmin, systemRole, role: systemRole };
 
-	const mem = await db.select()
-		.from(seriesMembers)
-		.where(and(eq(seriesMembers.seriesId, seriesId), eq(seriesMembers.personId, personId)))
-		.then(r => r[0] ?? null);
+	const mem = await membership(locals, seriesId, personId);
 
 	if (!mem || mem.role !== 'coordinator') throw error(403, 'Only a coordinator on this series can do that.');
 	return { personId, isAdmin: false, systemRole, role: 'coordinator' };
@@ -47,10 +79,7 @@ export async function requireMember(locals: App.Locals, seriesId: string): Promi
 	const { personId, isAdmin, systemRole } = await resolvePerson(locals);
 	if (isAdmin) return { personId, isAdmin, systemRole, role: systemRole };
 
-	const mem = await db.select()
-		.from(seriesMembers)
-		.where(and(eq(seriesMembers.seriesId, seriesId), eq(seriesMembers.personId, personId)))
-		.then(r => r[0] ?? null);
+	const mem = await membership(locals, seriesId, personId);
 
 	if (!mem) throw error(403, 'Not a series member');
 	return { personId, isAdmin: false, systemRole, role: mem.role };
