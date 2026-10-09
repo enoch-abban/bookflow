@@ -59,29 +59,35 @@ npm run dev
 
 The seed expects a freshly migrated, empty database.
 
-Because sign-up is invite-only, the first admin needs an invite link issued from the command line:
+Because sign-up is invite-only, the first admin needs an invite link issued from the command line. After seeding, invite the seeded admin:
 
 ```sh
 npm run auth:invite -- "EdTech 1" you@example.com
 ```
 
-Open the printed link, set a name and password, and sign in. The sign-in code appears in the dev server's console while `RESEND_API_KEY` is empty.
+Starting from an empty database instead (production, say), `--admin` creates you as the admin and prints your invite link. It only runs while the app has no active admin:
+
+```sh
+npm run auth:invite -- --admin "Your Name" you@example.com
+```
+
+Open the printed link, set a name and password, and confirm with the emailed code. The code appears in the dev server's console while `RESEND_API_KEY` is empty. For production, `npm run auth:invite:prod -- --admin "Your Name" you@example.com` runs the same script with `.env.production` (its `DATABASE_URL`, `DATABASE_AUTH_TOKEN` and `ORIGIN`). If the link expires before you use it, run the first form with your name to get a new one.
 
 ## Scripts
 
-| Script                                    | Does                                                                       |
-| ----------------------------------------- | -------------------------------------------------------------------------- |
-| `npm run dev`                             | Development server                                                         |
-| `npm run build`, `npm run preview`        | Production build and preview                                               |
-| `npm run check`                           | Type-check with svelte-check                                               |
-| `npm run lint`, `npm run format`          | Prettier and ESLint                                                        |
-| `npm run test:unit`                       | Vitest (scheduling, calendar, workload, activity wording, templates, tour) |
-| `npm run test:e2e`                        | Playwright against a production build                                      |
-| `npm run db:generate -- --name <name>`    | Generate a migration after changing `schema.ts`                            |
-| `npm run db:migrate`                      | Apply migrations                                                           |
-| `npm run db:studio`                       | Browse the database                                                        |
-| `npm run db:seed`                         | Seed eSTEAM L2                                                             |
-| `npm run auth:invite -- <person> <email>` | Issue an invite link without sending email                                 |
+| Script                                    | Does                                                                                                           |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `npm run dev`                             | Development server                                                                                             |
+| `npm run build`, `npm run preview`        | Production build and preview                                                                                   |
+| `npm run check`                           | Type-check with svelte-check                                                                                   |
+| `npm run lint`, `npm run format`          | Prettier and ESLint                                                                                            |
+| `npm run test:unit`                       | Vitest (scheduling, calendar, workload, activity wording, templates, tour)                                     |
+| `npm run test:e2e`                        | Playwright against a production build                                                                          |
+| `npm run db:generate -- --name <name>`    | Generate a migration after changing `schema.ts`                                                                |
+| `npm run db:migrate`                      | Apply migrations                                                                                               |
+| `npm run db:studio`                       | Browse the database                                                                                            |
+| `npm run db:seed`                         | Seed eSTEAM L2                                                                                                 |
+| `npm run auth:invite -- <person> <email>` | Issue an invite link without sending email; `--admin "<name>" <email>` creates the first admin on an empty app |
 
 ## Database changes
 
