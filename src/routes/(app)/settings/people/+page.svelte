@@ -148,7 +148,7 @@
 	{/if}
 
 	{#if data.iAmAdmin}
-		<section class="transfer card">
+		<section class="transfer card" data-tour="admin-transfer">
 			{#if data.outgoing}
 				<div class="transfer-head">
 					<div>
@@ -207,7 +207,7 @@
 	<div class="table-wrap">
 		<table>
 			<thead>
-				<tr><th>Name</th><th>App role</th><th>Series and role</th><th>Status</th><th class="right">Actions</th></tr>
+				<tr><th>Name</th><th data-tour="people-roles">App role</th><th>Series and role</th><th>Status</th><th class="right">Actions</th></tr>
 			</thead>
 			<tbody>
 				{#each shown as p (p.id)}

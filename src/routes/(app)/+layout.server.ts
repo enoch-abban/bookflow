@@ -11,7 +11,7 @@ const LAST_SERIES = 'bookflow_series';
 // keep the last series opened, remembered in a cookie, so its links stay one click away.
 export const load: LayoutServerLoad = async ({ locals, params, cookies }) => {
 	const me = locals.user
-		? await db.select({ id: people.id, systemRole: people.systemRole, displayName: people.displayName, tourDoneAt: people.tourDoneAt }).from(people).where(eq(people.userId, locals.user.id)).then(r => r[0])
+		? await db.select({ id: people.id, systemRole: people.systemRole, displayName: people.displayName, tourVersion: people.tourVersion }).from(people).where(eq(people.userId, locals.user.id)).then(r => r[0])
 		: undefined;
 	// Admins and managers have app-wide access; only admins manage system roles and holidays.
 	const isAdmin = !!me && me.systemRole !== 'member';
@@ -38,7 +38,8 @@ export const load: LayoutServerLoad = async ({ locals, params, cookies }) => {
 		seriesList,
 		// For the guided tour: what to show, and whether it still starts by itself.
 		role: isAdmin ? me!.systemRole as 'admin' | 'manager' : (role ?? 'contributor') as 'coordinator' | 'contributor' | 'viewer',
-		tourDone: !me || !!me.tourDoneAt,
+		// The tour version this person last finished or skipped; newer steps show as "What's new".
+		tourSeen: me?.tourVersion ?? Number.MAX_SAFE_INTEGER,
 		// An admin role offered to this person, shown as a banner until they accept or decline.
 		incomingTransfer: me ? (await pendingFor(me.id)).find((t) => !t.mine) ?? null : null,
 	};

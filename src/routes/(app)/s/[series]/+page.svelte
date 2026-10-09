@@ -137,7 +137,7 @@
 </div>
 
 {#if data.books.length}
-	<div class="filters" role="group" aria-label="Filter the matrix">
+	<div class="filters" data-tour="matrix-filters" role="group" aria-label="Filter the matrix">
 		<label><span>{data.series.bookGroupLabel}</span>
 			<select class="input" bind:value={fGroup}><option value="">All</option>{#each groupOptions as g (g)}<option value={g}>{g}</option>{/each}</select>
 		</label>

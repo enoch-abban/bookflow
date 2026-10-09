@@ -146,7 +146,9 @@ export const people = sqliteTable('people', {
 	// change system roles, change holidays, or edit another admin's or manager's account.
 	systemRole: text('system_role', { enum: ['admin', 'manager', 'member'] }).notNull().default('member'),
 	active: integer('active').notNull().default(1),
-	tourDoneAt: text('tour_done_at') // set when they finish or skip the guided tour; it starts once until then
+	// The guided tour version they last finished or skipped (0: never). A newer version shows
+	// them a short "What's new" run of the steps added since.
+	tourVersion: integer('tour_version').notNull().default(0)
 });
 
 export const seriesMembers = sqliteTable(

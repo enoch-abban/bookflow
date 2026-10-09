@@ -5,16 +5,24 @@
 	import { onMount } from 'svelte';
 	import Tour from '#lib/components/Tour.svelte';
 	import TaskDrawer from '#lib/components/TaskDrawer.svelte';
-	import { stepsFor } from '#lib/tour/steps.ts';
+	import { autoTour, stepsFor } from '#lib/tour/steps.ts';
 	let { children, data }: LayoutProps = $props();
 
-	// Guided tour: starts by itself on a person's first visit, replays from the Tour button.
+	// Guided tour: the whole tour on a person's first visit, a short "What's new" run when steps
+	// have been added since they last saw it, and the whole tour again from the Tour button.
 	let touring = $state(false);
+	let whatsNew = $state(false);
 	const tourCtx = $derived({ seriesId: data.seriesId, role: data.role, seriesCount: data.seriesList.length });
-	const tourSteps = $derived(stepsFor(tourCtx));
+	const tourSteps = $derived(whatsNew ? autoTour(tourCtx, data.tourSeen) : stepsFor(tourCtx));
 	onMount(() => {
-		if (!data.tourDone && data.user) setTimeout(() => (touring = true), 600);
+		if (!data.user || !autoTour(tourCtx, data.tourSeen).length) return;
+		whatsNew = true;
+		setTimeout(() => (touring = true), 600);
 	});
+	function replayTour() {
+		whatsNew = false;
+		touring = true;
+	}
 	function endTour() {
 		fetch('/api/me/tour', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ done: true }) }).catch(() => {});
 	}
@@ -94,9 +102,9 @@
 	</div>
 	{#if data.user}
 		<div class="nav-user">
-			<button class="btn btn-ghost" data-tour="tour-button" onclick={() => (touring = true)} title="A short walk through the app">Tour</button>
+			<button class="btn btn-ghost" data-tour="tour-button" onclick={replayTour} title="A short walk through the app">Tour</button>
 			<div class="account">
-				<button class="btn btn-ghost" onclick={toggleAccount} aria-expanded={accountOpen} aria-haspopup="true">
+				<button class="btn btn-ghost" data-tour="account-menu" onclick={toggleAccount} aria-expanded={accountOpen} aria-haspopup="true">
 					{data.me?.displayName ?? data.user.name}{#if data.systemRole !== 'member'}<span class="role-tag">{data.systemRole === 'admin' ? 'Admin' : 'Manager'}</span>{/if}
 				</button>
 				{#if accountOpen}

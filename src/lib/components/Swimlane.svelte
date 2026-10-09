@@ -869,8 +869,8 @@
 				>Redo</button>
 			</div>
 			<div class="btn-seg">
-				<button class:on={laneMode === 'book'} onclick={() => (laneMode = 'book')}>By book</button>
-				<button class:on={laneMode === 'person'} onclick={() => (laneMode = 'person')}
+				<button data-tour="lane-book" class:on={laneMode === 'book'} onclick={() => (laneMode = 'book')}>By book</button>
+				<button data-tour="lane-person" class:on={laneMode === 'person'} onclick={() => (laneMode = 'person')}
 					>By person</button
 				>
 			</div>
@@ -1030,6 +1030,7 @@
 					class:sl-lane--drop={drag?.travelled && laneMode === 'person' && drag.overLane === lane.id && drag.fromLane !== lane.id}
 					class:sl-lane--unassigned={lane.id === UNASSIGNED}
 					data-lane={lane.id}
+					data-tour={lane.id === UNASSIGNED ? 'unassigned-lane' : undefined}
 					style="height:{box.height}px"
 				>
 					<!-- Sticky label -->

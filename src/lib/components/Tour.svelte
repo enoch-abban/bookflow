@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import type { Step, TourContext } from '#lib/tour/steps.ts';
+	import { closeTask, taskDrawer } from '#lib/task-drawer.svelte.ts';
 
 	type Props = {
 		steps: Step[];
@@ -55,6 +56,37 @@
 		return null;
 	}
 
+	// Some steps need the page in a particular state: the task drawer open, or the swimlane by
+	// person. The tour sets that up and puts the page back as it found it.
+	let openedDrawer = false;
+	let switchedLanes = false;
+	async function prepare(st: Step) {
+		if (st.state?.drawer) {
+			if (!taskDrawer.taskId) {
+				(await waitFor('button.chip', 2000) as HTMLElement | null)?.click();
+				openedDrawer = true;
+			}
+		} else if (openedDrawer) {
+			closeTask();
+			openedDrawer = false;
+		}
+		if (st.state?.lanes === 'person') {
+			const btn = await waitFor('[data-tour="lane-person"]', 2000) as HTMLElement | null;
+			if (btn && !btn.classList.contains('on')) {
+				btn.click();
+				switchedLanes = true;
+			}
+		} else if (switchedLanes) {
+			(document.querySelector('[data-tour="lane-book"]') as HTMLElement | null)?.click();
+			switchedLanes = false;
+		}
+	}
+	function restore() {
+		if (openedDrawer) closeTask();
+		if (switchedLanes) (document.querySelector('[data-tour="lane-book"]') as HTMLElement | null)?.click();
+		openedDrawer = switchedLanes = false;
+	}
+
 	/** Open step i (its page first), moving on in `dir` past any whose element is missing. */
 	async function show(i: number, dir: 1 | -1) {
 		const mine = ++run;
@@ -62,7 +94,13 @@
 		while (i >= 0 && i < steps.length) {
 			const st = steps[i];
 			const path = st.path(ctx);
-			if (path && page.url.pathname !== path) await goto(path);
+			if (path && page.url.pathname !== path) {
+				// Leaving the page: the drawer and lane view belong to the page being left.
+				restore();
+				await goto(path);
+			}
+			if (mine !== run) return;
+			await prepare(st);
 			if (mine !== run) return;
 			const el = st.target ? await waitFor(`[data-tour="${st.target}"]`) : null;
 			if (mine !== run) return;
@@ -88,6 +126,7 @@
 
 	function end(how: 'finished' | 'skipped') {
 		run++;
+		restore();
 		open = false;
 		target = null;
 		rect = null;

@@ -205,7 +205,7 @@
 
 {#if taskDrawer.taskId}
 	<div class="backdrop" onclick={closeTask} role="presentation"></div>
-	<div class="drawer" bind:this={panel} role="dialog" aria-modal="true" aria-labelledby="drawer-title" onkeydown={trap} tabindex="-1">
+	<div class="drawer" data-tour="task-drawer" bind:this={panel} role="dialog" aria-modal="true" aria-labelledby="drawer-title" onkeydown={trap} tabindex="-1">
 		<header class="d-head">
 			<div class="d-title">
 				{#if detail}
@@ -268,7 +268,7 @@
 				</section>
 
 				<!-- Assignees -->
-				<section>
+				<section data-tour="drawer-assignees">
 					<div class="sec-head">
 						<h3>Assignees</h3>
 						{#if d.viewer.isCoord && !picking}<button class="btn btn-link" onclick={startPicking}>Edit</button>{/if}
