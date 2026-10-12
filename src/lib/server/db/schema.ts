@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, index, primaryKey, check } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, index, uniqueIndex, primaryKey, check } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 import { ulid } from 'ulid';
 
@@ -148,7 +148,9 @@ export const people = sqliteTable('people', {
 	active: integer('active').notNull().default(1),
 	// The guided tour version they last finished or skipped (0: never). A newer version shows
 	// them a short "What's new" run of the steps added since.
-	tourVersion: integer('tour_version').notNull().default(0)
+	tourVersion: integer('tour_version').notNull().default(0),
+	// Task emails (handoff, review, return, late). Sign-in codes, invites and resets always go.
+	emailNotifications: integer('email_notifications').notNull().default(1)
 });
 
 export const seriesMembers = sqliteTable(
@@ -360,6 +362,36 @@ export const taskComments = sqliteTable('comments', {
 	body: text('body').notNull(),
 	createdAt: text('created_at').notNull()
 });
+
+// Notifications about someone's work (spec: Phase 2, notifications on handoff, return and
+// lateness). Every one is stored, whether or not it is emailed, so an in-app list can show
+// them too. dedupeKey stops the same news going out twice (a task turning late, say).
+export const notifications = sqliteTable(
+	'notifications',
+	{
+		id: text('id').primaryKey().$defaultFn(newId),
+		personId: text('person_id')
+			.notNull()
+			.references(() => people.id),
+		seriesId: text('series_id').references(() => series.id, { onDelete: 'cascade' }),
+		taskId: text('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+		kind: text('kind', { enum: ['handoff', 'review_request', 'returned', 'late'] }).notNull(),
+		dedupeKey: text('dedupe_key'),
+		subject: text('subject').notNull(),
+		body: text('body').notNull(),
+		createdAt: text('created_at').notNull(),
+		// pending → sent, or skipped (no account, opted out, inactive), or failed after retries
+		emailStatus: text('email_status', { enum: ['pending', 'sent', 'skipped', 'failed'] }).notNull().default('pending'),
+		emailAttempts: integer('email_attempts').notNull().default(0),
+		emailedAt: text('emailed_at'),
+		readAt: text('read_at')
+	},
+	(t) => [
+		index('idx_notifications_person').on(t.personId, t.createdAt),
+		index('idx_notifications_pending').on(t.emailStatus),
+		uniqueIndex('uq_notifications_dedupe').on(t.personId, t.dedupeKey)
+	]
+);
 
 // ── History ────────────────────────────────────────────────────────────────
 

@@ -7,6 +7,7 @@ import { ulid } from 'ulid';
 import { db } from '#lib/server/db/index.ts';
 import { activityLog, books, dependencies, printApprovals, printRecords, stages, tasks } from '#lib/server/db/schema.ts';
 import { isValidIsbn13, normalizeIsbn } from '../isbn.ts';
+import { background, notifyStatusChange } from './notifications.ts';
 
 type BookRow = typeof books.$inferSelect;
 
@@ -140,5 +141,7 @@ export async function approvePrint(opts: { book: BookRow; actorId: string; note?
 			});
 		}
 	});
+	// Approving completes the gate, which hands over to printing.
+	if (gate && gate.status !== 'done') background(() => notifyStatusChange({ taskId: gate.id, to: 'done', actorId: opts.actorId }));
 	return json({ approval, gateTaskId: gate?.id ?? null }, { status: 201 });
 }

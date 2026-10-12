@@ -11,6 +11,7 @@ import { ulid } from 'ulid';
 import { db, writeAll } from '#lib/server/db/index.ts';
 import { activityLog, books, dependencies, people, reviewCycles, seriesMembers, stages, taskAssignees, tasks } from '#lib/server/db/schema.ts';
 import { resolvePerson } from './api-auth.ts';
+import { background, notifyStatusChange } from './notifications.ts';
 
 type TaskRow = typeof tasks.$inferSelect;
 
@@ -130,5 +131,6 @@ export async function recordReview(opts: {
 		}),
 	]);
 	const updated = (rows as TaskRow[])[0];
+	background(() => notifyStatusChange({ taskId: task.id, to: updates.status, actorId: personId, summary }));
 	return json({ task: updated, review: cycle });
 }

@@ -16,6 +16,10 @@ export const variables = defineEnvVars({
 		description: 'API key for Resend transactional email. When unset, emails are printed to the server console instead.',
 		schema: (value) => value || undefined
 	},
+	CRON_SECRET: {
+		description: 'Secret Vercel sends to the daily job (/api/cron/daily) as a bearer token. Without it the job refuses to run.',
+		schema: (value) => value || undefined
+	},
 	EMAIL_FROM: {
 		description: 'Sender for transactional email; the domain must be verified in Resend.',
 		schema: (value) => value || 'bookflow <noreply@bookflow.app>'

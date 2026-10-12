@@ -2,7 +2,8 @@
 	import type { LayoutProps } from './$types';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
+	import { openTask } from '#lib/task-drawer.svelte.ts';
 	import Tour from '#lib/components/Tour.svelte';
 	import TaskDrawer from '#lib/components/TaskDrawer.svelte';
 	import { autoTour, stepsFor } from '#lib/tour/steps.ts';
@@ -63,6 +64,22 @@
 		nameMsg = res.ok ? { ok: true, text: 'Name saved.' } : { ok: false, text: body.message ?? 'That name could not be saved.' };
 		if (res.ok) await invalidateAll();
 	}
+	// Task emails on or off (handoff, review, return, late); saved as soon as it is ticked.
+	let savingPref = $state(false);
+	async function saveEmailPref(on: boolean) {
+		savingPref = true;
+		const res = await fetch('/api/me', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ emailNotifications: on }) });
+		savingPref = false;
+		nameMsg = res.ok ? { ok: true, text: on ? 'Task emails are on.' : 'Task emails are off.' } : { ok: false, text: 'That setting could not be saved.' };
+		await invalidateAll();
+	}
+
+	// Links in notification emails end in ?task=<id>: open that task's drawer.
+	$effect(() => {
+		const id = page.url.searchParams.get('task');
+		if (id) untrack(() => openTask(id));
+	});
+
 	function onAccountKey(e: KeyboardEvent) {
 		if (e.key === 'Escape' && accountOpen) accountOpen = false;
 	}
@@ -121,6 +138,10 @@
 							<button class="btn btn-primary" disabled={savingName || !myName.trim()}>Save</button>
 							<button type="button" class="btn btn-ghost" onclick={() => (accountOpen = false)}>Close</button>
 						</div>
+						<label class="email-pref">
+							<input type="checkbox" checked={data.me?.emailNotifications ?? true} disabled={savingPref} onchange={(e) => saveEmailPref(e.currentTarget.checked)} />
+							<span>Email me about my tasks<span class="hint">When work reaches you, is returned, or turns late.</span></span>
+						</label>
 						<p class="app-version">{versionLabel}</p>
 					</form>
 				{/if}
@@ -161,6 +182,9 @@
 	}
 	.account-menu .hint { font-size: 12px; color: var(--muted-foreground); margin: 0; }
 	.account-menu .row { display: flex; gap: var(--sp-2); }
+	.email-pref { display: flex; align-items: flex-start; gap: var(--sp-2); padding-top: var(--sp-2); border-top: 1px solid var(--border); font-size: 13px; cursor: pointer; }
+	.email-pref input { margin-top: 3px; }
+	.email-pref .hint { display: block; font-size: 12px; color: var(--muted-foreground); }
 	.app-version {
 		margin: var(--sp-1) 0 0; padding-top: var(--sp-2); border-top: 1px solid var(--border);
 		font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums;

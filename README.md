@@ -46,6 +46,7 @@ Fill in `.env`:
 | `BETTER_AUTH_SECRET` | 32+ random characters                                                                          |
 | `RESEND_API_KEY`     | leave empty in development: emails, including sign-in codes, are printed to the server console |
 | `EMAIL_FROM`         | sender address; its domain must be verified in Resend                                          |
+| `CRON_SECRET`        | any long random string; Vercel sends it to the daily job. Leave empty in development           |
 
 Environment variables are declared in `src/env.ts` and read through `$app/env/private`. After adding one, run `npx svelte-kit sync`.
 
@@ -109,6 +110,7 @@ To see it locally, run the dev server with `DB_SIMULATED_LATENCY_MS=15` to add a
 - **Dependencies and propagation.** A task starts the next working day after its predecessor ends. Moving one pushes its successors; started and finished tasks never move (`src/lib/server/scheduler.ts`).
 - **Windows.** A series can split its calendar into windows. A task belongs to the window it starts in and may run past its edge only by the series' overflow allowance. Window and rule changes show their impact before saving.
 - **Activity, undo and redo.** Every change is written to `activity_log` with before and after values. One action and every task it pushed share a batch id, so it undoes as one. Undo and redo entries point at the batch they reverse (`reverts_batch_id`), and are refused, naming the tasks, if someone has changed them since (`src/routes/api/undo`, `src/lib/server/reapply.ts`, `src/lib/server/history.ts`).
+- **Notifications.** Finishing a task tells the people on each task that can now start; submitting for review tells the reviewers; a return tells the assignees, with the reviewer's summary. A daily job at 07:00 UTC (Africa/Accra, `vercel.json`) tells assignees and the series' coordinators, once, when a task turns late, and retries failed emails. Every notification is stored in `notifications`; emails go out after the response, and anyone can turn them off from the account menu (`src/lib/server/notifications.ts`). Links ending in `?task=<id>` open that task's drawer.
 - **Templates.** A template is a series' pipeline keyed by track and stage key, so it applies to any new series (`src/lib/templates/definition.ts`).
 
 ## Project layout

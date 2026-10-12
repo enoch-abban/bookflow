@@ -11,6 +11,7 @@ import { loadSeriesContext } from '#lib/server/series-context.ts';
 import { refit } from '#lib/server/refit.ts';
 import { refitChanges, refitReport, taskChangeQueries } from '#lib/server/schedule-write.ts';
 import { taskDetail } from '#lib/server/task-detail.ts';
+import { background, notifyStatusChange } from '#lib/server/notifications.ts';
 
 // ── PATCH /api/tasks/:id ─────────────────────────────────────────────────────
 // GET /api/tasks/:id — everything the task drawer shows, for any series member.
@@ -121,6 +122,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	}
 	const [rows] = await writeAll(queries);
 	const updated = (rows as (typeof tasks.$inferSelect)[])[0];
+	if (updates.status) background(() => notifyStatusChange({ taskId: id, to: updated.status, actorId: personId }));
 	return json({ task: updated, report, batchId });
 };
 

@@ -30,7 +30,7 @@ export const load: LayoutServerLoad = async ({ locals, params, cookies }) => {
 		user: locals.user ?? null,
 		isAdmin,
 		systemRole: me?.systemRole ?? 'member',
-		me: me ? { id: me.id, displayName: me.displayName } : null,
+		me: me ? { id: me.id, displayName: me.displayName, emailNotifications: !!me.emailNotifications } : null,
 		canManageSeries: isAdmin || role === 'coordinator',
 		seriesId: current?.id ?? null,
 		seriesList: seriesList.map(({ id, name, status }) => ({ id, name, status })),

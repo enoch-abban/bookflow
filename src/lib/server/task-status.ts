@@ -11,6 +11,7 @@ import { activityLog, books, seriesMembers, stages, taskAssignees, tasks } from 
 import { isAllowedTransition } from './scheduler.ts';
 import { resolvePerson } from './api-auth.ts';
 import { reviewGuard } from './reviews.ts';
+import { background, notifyStatusChange } from './notifications.ts';
 
 type TaskRow = typeof tasks.$inferSelect;
 
@@ -72,5 +73,6 @@ export async function changeStatus(locals: App.Locals, taskId: string, to: TaskR
 			afterJson: JSON.stringify(updates), createdAt: now,
 		}),
 	]);
+	background(() => notifyStatusChange({ taskId: task.id, to, actorId: personId }));
 	return { ...task, ...updates };
 }

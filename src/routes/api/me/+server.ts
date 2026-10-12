@@ -7,13 +7,19 @@ import { activityLog, people } from '#lib/server/db/schema.ts';
 import { parseBody, resolvePerson } from '#lib/server/api-auth.ts';
 import { renameUser } from '#lib/server/accounts.ts';
 import { parseOr400, updateMeSchema } from '#lib/server/validation.ts';
+import { setEmailNotifications } from '#lib/server/notifications.ts';
 
-// PATCH /api/me { displayName } — anyone signed in renames themselves (spec: the only self-edit;
-// role and active status cannot be changed here).
+// PATCH /api/me { displayName?, emailNotifications? } — anyone signed in renames themselves, or
+// turns task emails on or off (spec: the only self-edits; role and active status cannot be
+// changed here).
 export const PATCH: RequestHandler = async ({ request, locals }) => {
 	const { personId, personRow } = await resolvePerson(locals);
-	const { displayName } = parseOr400(updateMeSchema, await parseBody(request));
-	if (displayName === personRow.displayName) return json({ person: personRow });
+	const { displayName, emailNotifications } = parseOr400(updateMeSchema, await parseBody(request));
+	if (emailNotifications !== undefined) {
+		await setEmailNotifications(personId, emailNotifications);
+		if (displayName === undefined) return json({ person: { ...personRow, emailNotifications: emailNotifications ? 1 : 0 } });
+	}
+	if (displayName === undefined || displayName === personRow.displayName) return json({ person: personRow });
 	const now = new Date().toISOString();
 	const person = await db.transaction(async (tx) => {
 		const [row] = await tx.update(people).set({ displayName }).where(eq(people.id, personId)).returning();
