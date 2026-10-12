@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { LayoutProps } from './$types';
+	import { versionLabel } from '#lib/version.ts';
 	let { children }: LayoutProps = $props();
 </script>
 
@@ -8,12 +9,13 @@
 		<a href="/" class="auth-logo">bookflow</a>
 		{@render children()}
 	</div>
+	<p class="auth-version">{versionLabel}</p>
 </main>
 
 <style>
 	.auth-shell {
 		min-height: 100%;
-		display: flex; align-items: flex-start; justify-content: center;
+		display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
 		padding: 12vh var(--sp-4) var(--sp-8);
 		background: var(--muted);
 	}
@@ -25,6 +27,7 @@
 		padding: var(--sp-8) var(--sp-6);
 		display: flex; flex-direction: column; gap: var(--sp-5);
 	}
+	.auth-version { margin: var(--sp-4) 0 0; font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 	.auth-logo { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
 	.auth-logo:hover { text-decoration: none; }
 	.auth-card :global(h1) { font-size: 20px; font-weight: 700; }

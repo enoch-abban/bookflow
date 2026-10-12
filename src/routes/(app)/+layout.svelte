@@ -6,6 +6,7 @@
 	import Tour from '#lib/components/Tour.svelte';
 	import TaskDrawer from '#lib/components/TaskDrawer.svelte';
 	import { autoTour, stepsFor } from '#lib/tour/steps.ts';
+	import { versionLabel } from '#lib/version.ts';
 	let { children, data }: LayoutProps = $props();
 
 	// Guided tour: the whole tour on a person's first visit, a short "What's new" run when steps
@@ -120,6 +121,7 @@
 							<button class="btn btn-primary" disabled={savingName || !myName.trim()}>Save</button>
 							<button type="button" class="btn btn-ghost" onclick={() => (accountOpen = false)}>Close</button>
 						</div>
+						<p class="app-version">{versionLabel}</p>
 					</form>
 				{/if}
 			</div>
@@ -159,6 +161,10 @@
 	}
 	.account-menu .hint { font-size: 12px; color: var(--muted-foreground); margin: 0; }
 	.account-menu .row { display: flex; gap: var(--sp-2); }
+	.app-version {
+		margin: var(--sp-1) 0 0; padding-top: var(--sp-2); border-top: 1px solid var(--border);
+		font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums;
+	}
 	.series-switch {
 		font: inherit; font-size: 13px; font-weight: 600;
 		border: 1px solid var(--border); border-radius: var(--radius-sm);
