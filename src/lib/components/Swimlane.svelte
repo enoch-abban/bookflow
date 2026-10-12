@@ -7,6 +7,10 @@
 	import { setHolidays } from '#lib/schedule/calendar.ts';
 	import { criticalPath } from '#lib/schedule/critical.ts';
 	import { statusLabel } from '#lib/status.ts';
+	import { swimlaneSize, swimlaneSvg, type SwimlaneModel } from '#lib/export/swimlane-svg.ts';
+	import { canvasMeasure, download, pdfBlob, pngBlob, svgToCanvas } from '#lib/export/raster.ts';
+	import { fileSlug } from '#lib/csv.ts';
+	import { versionLabel } from '#lib/version.ts';
 
 	// ── Types ─────────────────────────────────────────────────────────────────
 
@@ -490,22 +494,30 @@
 
 	let hoverId = $state<string | null>(null);
 
-	const arrows = $derived.by((): Arrow[] => {
-		const focusId = drag?.taskId ?? resizing?.taskId ?? hoverId;
+	/** Every dependency that can be drawn, with whether it is shown without hovering. */
+	const allArrows = $derived.by((): (Arrow & { always: boolean; ends: [string, string] })[] => {
 		const onPath = (a: string, b: string) => critPath && critical.has(a) && critical.has(b);
+		const byId = new Map(localTasks.map((t) => [t.id, t]));
 		return deps.flatMap((dep) => {
-			const pred = localTasks.find((t) => t.id === dep.predecessorId);
-			const succ = localTasks.find((t) => t.id === dep.successorId);
+			const pred = byId.get(dep.predecessorId);
+			const succ = byId.get(dep.successorId);
 			if (!pred || !succ) return [];
 			const y1 = layout.centerY.get(pred.id);
 			const y2 = layout.centerY.get(succ.id);
 			if (y1 === undefined || y2 === undefined) return [];
 			// A task's successor starts the working day after it ends; a gate's may start the same day.
 			const violated = pred.durationDays === 0 ? succ.startDate < pred.endDate : succ.startDate <= pred.endDate;
-			if (!violated && focusId !== pred.id && focusId !== succ.id && !onPath(pred.id, succ.id)) return [];
 			// From the drawn edges, which sit BAR_INSET inside the day edges.
-			return [{ key: dep.id, x1: barRight(pred) - BAR_INSET, y1, x2: barLeft(succ) + BAR_INSET, y2, violated }];
+			return [{
+				key: dep.id, x1: barRight(pred) - BAR_INSET, y1, x2: barLeft(succ) + BAR_INSET, y2, violated,
+				always: violated || onPath(pred.id, succ.id), ends: [pred.id, succ.id]
+			}];
 		});
+	});
+
+	const arrows = $derived.by((): Arrow[] => {
+		const focusId = drag?.taskId ?? resizing?.taskId ?? hoverId;
+		return allArrows.filter((a) => a.always || a.ends.includes(focusId ?? ''));
 	});
 
 	// ── Today / target X ─────────────────────────────────────────────────────
@@ -874,6 +886,107 @@
 		if (lanes[i].groupLabel !== lanes[i - 1].groupLabel) return lanes[i].groupLabel ?? null;
 		return null;
 	}
+
+	// ── Export (spec: Phase 2, export of the swimlane to PDF and PNG) ─────────
+	// The whole plan, not just what is scrolled into view: the same lanes, bars and windows,
+	// redrawn as one SVG, then turned into a PNG or a one-page PDF in the browser.
+
+	let exportArrows = $state(false);
+	let exporting = $state<'png' | 'pdf' | null>(null);
+	let exportMenu: HTMLDetailsElement | undefined = $state();
+
+	const TOKENS = [
+		'background', 'foreground', 'muted', 'muted-foreground', 'border', 'weekend', 'danger', 'primary', 'primary-active',
+		'primary-subtle', 'primary-subtle-foreground', 'secondary-subtle', 'secondary-foreground', 'tertiary', 'tertiary-subtle',
+		'tertiary-foreground', 'publish-subtle', 'publish-foreground', 'production', 'production-subtle'
+	];
+
+	function exportModel(): SwimlaneModel {
+		const css = getComputedStyle(document.documentElement);
+		const colors = Object.fromEntries(TOKENS.map((t) => [t, css.getPropertyValue(`--${t}`).trim()]));
+		let prevMonth = ''; // working days come in date order
+		const bars: SwimlaneModel['bars'] = [];
+		const gates: SwimlaneModel['gates'] = [];
+		const groups: SwimlaneModel['groups'] = [];
+		const laneRows: SwimlaneModel['lanes'] = [];
+		lanes.forEach((lane, li) => {
+			const box = layout.boxes[li];
+			if (box.header) groups.push({ y: box.top - GRP_H, h: GRP_H, label: box.header });
+			laneRows.push({ y: box.top, h: box.height, label: lane.label, sublabel: laneMode === 'book' || lane.id === UNASSIGNED ? lane.sublabel : undefined });
+			for (const task of lane.tasks) {
+				const stage = stageMap.get(task.stageId);
+				const rowTop = box.top + (box.sub.get(task.id) ?? 0) * ROW_H;
+				const isCritical = critPath && critical.has(task.id);
+				if (stage?.category === 'gate') {
+					gates.push({ cx: barLeft(task) + DAY_W / 2, cy: rowTop + ROW_H / 2, critical: isCritical, dim: critPath && !isCritical });
+					continue;
+				}
+				const bx = barLeft(task);
+				const ovf = overflowOf(task);
+				const outside = isOutsideWindow(task);
+				const label = [
+					`${stage?.name ?? ''}${task.iteration > 1 ? ` ×${task.iteration}` : ''}`,
+					(lane.overflow || laneMode === 'person') && bookMap.get(task.bookId)?.code,
+					outside && 'Outside window'
+				].filter(Boolean).join(' · ');
+				bars.push({
+					x: bx + BAR_INSET, y: rowTop + 4, w: barWidth(task) - 2 * BAR_INSET, h: ROW_H - 8,
+					label, category: stage?.category ?? 'creation', status: task.status,
+					unscheduled: lane.overflow, outside, critical: isCritical, dim: critPath && !isCritical,
+					overflow: ovf ? { x: ovf.edgeX - bx - BAR_INSET, label: `+${ovf.days}d` } : undefined
+				});
+			}
+		});
+		return {
+			title: series.name,
+			subtitle: `Swimlane by ${laneMode}${critPath ? ', critical path outlined' : ''} · exported ${new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })} · ${versionLabel}`,
+			labelW: LABEL_W,
+			width: totalW,
+			winRow: WIN_ROW,
+			dayRow: DAY_ROW,
+			windows: windowsProp.map((w, wi) => {
+				const x = dateX.get(w.startDate) ?? 0;
+				return { x, w: (dateX.get(w.endDate) ?? 0) + DAY_W - x, label: w.label, tint: WIN_COLORS[wi % WIN_COLORS.length], edge: WIN_BORDER_COLORS[wi % WIN_BORDER_COLORS.length] };
+			}),
+			// The month goes on its first working day, so a month starting on a weekend keeps its name.
+			days: workingDays.map((d) => {
+				const month = MONTHS[+d.date.slice(5, 7) - 1];
+				const first = month !== prevMonth;
+				prevMonth = month;
+				return { x: dateX.get(d.date) ?? 0, w: DAY_W, label: String(d.dayNum), month: first ? month : null };
+			}),
+			offDays: calDays.filter((d) => d.isWeekend).map((d) => ({ x: dateX.get(d.date) ?? 0, w: WKND_W, holiday: holidayName.has(d.date) })),
+			gaps: gapXs.map((x) => ({ x, w: WIN_GAP })),
+			groups,
+			lanes: laneRows,
+			bodyH: layout.totalH,
+			bars,
+			gates,
+			// All arrows when asked; otherwise those the screen shows without hovering.
+			arrows: allArrows.filter((a) => exportArrows || a.always).map((a) => ({ d: arrow(a.x1, a.y1, a.x2, a.y2), violated: a.violated })),
+			todayX: todayX === undefined ? undefined : todayX + DAY_W / 2,
+			targetX: targetX === undefined ? undefined : targetX + DAY_W / 2,
+			colors
+		};
+	}
+
+	async function exportAs(kind: 'png' | 'pdf') {
+		if (exporting) return;
+		exporting = kind;
+		if (exportMenu) exportMenu.open = false;
+		try {
+			const model = exportModel();
+			const size = swimlaneSize(model);
+			const canvas = await svgToCanvas(swimlaneSvg(model, canvasMeasure()), size);
+			const name = `${fileSlug(series.name)}-swimlane-${today}.${kind}`;
+			download(kind === 'png' ? await pngBlob(canvas) : await pdfBlob(canvas, size, `${series.name} swimlane`), name);
+			showNotice(`Saved ${name}.`, 'ok');
+		} catch (e) {
+			showNotice(`The export failed: ${e instanceof Error ? e.message : 'unknown error'}`);
+		} finally {
+			exporting = null;
+		}
+	}
 </script>
 
 <svelte:window onkeydown={onKey} />
@@ -910,6 +1023,15 @@
 			>
 				Critical path
 			</button>
+			<details class="sl-export" bind:this={exportMenu}>
+				<summary class="btn-toggle" title="Save the whole plan as an image or a PDF">{exporting ? 'Exporting…' : 'Export'}</summary>
+				<div class="sl-export-menu" role="group" aria-label="Export the swimlane">
+					<button onclick={() => exportAs('png')} disabled={!!exporting}>PNG image</button>
+					<button onclick={() => exportAs('pdf')} disabled={!!exporting}>PDF</button>
+					<label><input type="checkbox" bind:checked={exportArrows} /> All dependency arrows</label>
+					<p>The whole plan, {laneMode === 'book' ? 'by book' : 'by person'}{critPath ? ', with the critical path' : ''}, as it is now.</p>
+				</div>
+			</details>
 			{#if series.strictMode}
 				<span class="badge-strict">Strict</span>
 			{/if}
@@ -1217,6 +1339,61 @@
 		background: var(--primary-subtle);
 		color: var(--primary);
 		border-color: transparent;
+	}
+
+	/* Export menu */
+	.sl-export {
+		position: relative;
+	}
+	.sl-export summary {
+		list-style: none;
+	}
+	.sl-export summary::-webkit-details-marker {
+		display: none;
+	}
+	.sl-export-menu {
+		position: absolute;
+		right: 0;
+		top: calc(100% + 6px);
+		z-index: 40;
+		width: 230px;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		padding: 6px;
+		background: var(--background);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		box-shadow: 0 8px 24px rgba(15, 23, 42, 0.15);
+		font-size: 12px;
+	}
+	.sl-export-menu button {
+		text-align: left;
+		padding: 6px 8px;
+		border: none;
+		border-radius: 4px;
+		background: none;
+		font: inherit;
+		color: var(--foreground);
+		cursor: pointer;
+	}
+	.sl-export-menu button:hover:not(:disabled) {
+		background: var(--muted);
+	}
+	.sl-export-menu label {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 6px 8px;
+		border-top: 1px solid var(--border);
+		margin-top: 2px;
+		color: var(--foreground);
+	}
+	.sl-export-menu p {
+		margin: 0;
+		padding: 0 8px 4px;
+		color: var(--muted-foreground);
+		font-size: 11px;
 	}
 	.badge-strict {
 		display: inline-block;
