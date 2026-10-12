@@ -97,6 +97,13 @@
 	const WIN_ROW = 26;
 	const DAY_ROW = 28;
 	const AXIS_H = WIN_ROW + DAY_ROW;
+	// Space before each window, so an arrow across a window edge has room to show.
+	const WIN_GAP = 16;
+	// Bars sit this far in from their day edges, so back-to-back tasks don't touch.
+	const BAR_INSET = 3;
+	// Below this horizontal run an arrow hooks under the junction instead of a near-zero stub.
+	const MIN_RUN = 14;
+	const HOOK = 8;
 
 	const MONTHS = [
 		'Jan',
@@ -279,15 +286,22 @@
 		return days;
 	});
 
-	// X positions: date → left-edge px offset
-	const { dateX, totalW } = $derived.by(() => {
+	// X positions: date → left-edge px offset. Each window after the first day of the axis is
+	// preceded by a WIN_GAP gutter; gapXs holds the gutters' left edges.
+	const { dateX, totalW, gapXs } = $derived.by(() => {
+		const starts = new Set(windowsProp.map((w) => w.startDate));
 		const m = new Map<string, number>();
+		const gaps: number[] = [];
 		let x = 0;
 		for (const day of calDays) {
+			if (x > 0 && starts.has(day.date)) {
+				gaps.push(x);
+				x += WIN_GAP;
+			}
 			m.set(day.date, x);
 			x += day.isWeekend ? WKND_W : DAY_W;
 		}
-		return { dateX: m, totalW: x };
+		return { dateX: m, totalW: x, gapXs: gaps };
 	});
 
 	const workingDays = $derived(calDays.filter((d) => !d.isWeekend));
@@ -489,7 +503,8 @@
 			// A task's successor starts the working day after it ends; a gate's may start the same day.
 			const violated = pred.durationDays === 0 ? succ.startDate < pred.endDate : succ.startDate <= pred.endDate;
 			if (!violated && focusId !== pred.id && focusId !== succ.id && !onPath(pred.id, succ.id)) return [];
-			return [{ key: dep.id, x1: barRight(pred), y1, x2: barLeft(succ), y2, violated }];
+			// From the drawn edges, which sit BAR_INSET inside the day edges.
+			return [{ key: dep.id, x1: barRight(pred) - BAR_INSET, y1, x2: barLeft(succ) + BAR_INSET, y2, violated }];
 		});
 	});
 
@@ -835,8 +850,20 @@
 	}
 
 	function arrow(x1: number, y1: number, x2: number, y2: number): string {
-		const cx = (x2 - x1) * 0.45;
-		return `M ${x1} ${y1} C ${x1 + cx} ${y1} ${x2 - cx} ${y2} ${x2} ${y2}`;
+		if (x2 - x1 >= MIN_RUN) {
+			const cx = (x2 - x1) * 0.45;
+			return `M ${x1} ${y1} C ${x1 + cx} ${y1} ${x2 - cx} ${y2} ${x2} ${y2}`;
+		}
+		// Too little room between the bars (back-to-back tasks): leave the predecessor's bottom
+		// (or top) near its end, run along the gap between rows next to the successor, and
+		// enter the successor's facing edge near its start.
+		const half = (ROW_H - 8) / 2; // a bar's half height
+		const up = y2 < y1;
+		const dir = up ? -1 : 1;
+		const sx = x1 - HOOK;
+		const ex = x2 + HOOK;
+		const channel = y1 === y2 ? y1 + ROW_H / 2 : y2 - dir * (ROW_H / 2);
+		return `M ${sx} ${y1 + dir * half} V ${channel} H ${ex} V ${y2 - (y1 === y2 ? -half : dir * half)}`;
 	}
 
 	// ── Group change detection for lane labels ────────────────────────────────
@@ -985,6 +1012,9 @@
 						]}"
 					></div>
 				{/each}
+				{#each gapXs as gx (gx)}
+					<div class="sl-win-gap" style="left:{gx}px;width:{WIN_GAP}px"></div>
+				{/each}
 				{#if todayX !== undefined}
 					<div class="sl-today-line" style="left:{todayX + DAY_W / 2}px"></div>
 				{/if}
@@ -1074,7 +1104,7 @@
 									class:sl-bar--outside={outside}
 									class:sl-bar--unscheduled={lane.overflow}
 									class:sl-bar--lifted={laneMode === 'person' && drag?.taskId === task.id && drag.fromLane === lane.id && drag.dy !== 0}
-									style="left:{bx}px;width:{bw}px;top:{rowTop + 4}px;height:{ROW_H - 8}px{laneMode === 'person' && drag?.taskId === task.id && drag.fromLane === lane.id ? `;transform:translateY(${drag.dy}px)` : ''}"
+									style="left:{bx + BAR_INSET}px;width:{bw - 2 * BAR_INSET}px;top:{rowTop + 4}px;height:{ROW_H - 8}px{laneMode === 'person' && drag?.taskId === task.id && drag.fromLane === lane.id ? `;transform:translateY(${drag.dy}px)` : ''}"
 									onpointerdown={(e) => onBarDown(e, task, lane.id)}
 									onpointerenter={() => (hoverId = task.id)}
 									onpointerleave={() => hoverId === task.id && (hoverId = null)}
@@ -1091,7 +1121,7 @@
 								>
 									{#if ovf}
 										<!-- The part past the window edge: faded, behind a dashed edge -->
-										<span class="sl-ovf" style="left:{ovf.edgeX - bx}px"><b>+{ovf.days}d</b></span>
+										<span class="sl-ovf" style="left:{ovf.edgeX - bx - BAR_INSET}px"><b>+{ovf.days}d</b></span>
 									{/if}
 									<!-- Resize handles -->
 									<span
@@ -1317,6 +1347,14 @@
 		top: 0;
 		height: 100%;
 		background: var(--weekend);
+	}
+	/* The gutter before a window: arrows across a window edge run through it */
+	.sl-win-gap {
+		position: absolute;
+		top: 0;
+		height: 100%;
+		background: var(--muted);
+		opacity: 0.6;
 	}
 	.sl-win-bg {
 		position: absolute;
