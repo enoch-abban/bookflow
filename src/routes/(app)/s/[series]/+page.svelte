@@ -30,6 +30,11 @@
 	function clearFilters() {
 		fGroup = fBatch = fPerson = fStatus = '';
 	}
+	// The CSV export takes the same filters, so it holds what the matrix shows.
+	const exportHref = $derived.by(() => {
+		const q = new URLSearchParams(Object.entries({ group: fGroup, batch: fBatch, person: fPerson, status: fStatus }).filter(([, v]) => v));
+		return `/api/series/${data.series.id}/export/tasks${q.size ? `?${q}` : ''}`;
+	});
 
 	// ── Derived lookup maps ───────────────────────────────────────────────────
 
@@ -157,6 +162,9 @@
 			<select class="input" bind:value={fStatus}><option value="">Any</option>{#each statusOptions as st (st)}<option value={st}>{statusLabel(st)}</option>{/each}</select>
 		</label>
 		{#if filtering}<button class="btn btn-link" onclick={clearFilters}>Clear filters</button>{/if}
+		<a class="btn btn-ghost export-link" href={exportHref} download
+			title={filtering ? 'Download the tasks that match these filters as a spreadsheet (CSV)' : 'Download every task as a spreadsheet (CSV)'}
+		>Export CSV</a>
 	</div>
 {/if}
 
@@ -264,6 +272,7 @@
 	.filters { display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: flex-end; padding: var(--sp-3) var(--sp-6); border-bottom: 1px solid var(--border); }
 	.filters label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted-foreground); font-weight: 500; }
 	.filters .input { min-width: 140px; padding-top: 4px; padding-bottom: 4px; font-size: 13px; }
+	.export-link { margin-left: auto; text-decoration: none; }
 	.badge-unassigned { border: 1px dashed var(--muted-foreground); cursor: pointer; background: var(--muted); color: var(--foreground); font: inherit; font-size: 12px; font-weight: 600; }
 	.chip-unassigned { font-size: 10px; font-weight: 700; color: var(--tertiary-foreground); background: var(--tertiary-subtle); padding: 0 4px; border-radius: 3px; }
 	button.chip { width: 100%; border: none; font: inherit; text-align: center; cursor: pointer; }
