@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deriveEnd, nextWorkingDay, propagate, settle, type SchedTask, type WindowRules } from './scheduler.ts';
+import { deriveEnd, nextWorkingDay, propagate, rejoin, settle, type SchedTask, type WindowRules } from './scheduler.ts';
 import { latestEnd, overlapping, placeInWindows, sortWindows, type Win } from '../schedule/windows.ts';
 import { withHolidays } from '../schedule/calendar.ts';
 import { refit } from './refit.ts';
@@ -163,5 +163,55 @@ describe('refit', () => {
 		const m = mapOf(task('a', '2026-10-28', 4, { windowId: 'w3', overflowAllowed: true }));
 		expect(refit(m, [], rules(2)).changes).toEqual([]);
 		expect(refit(m, [], rules(0)).changes[0]).toMatchObject({ kind: 'unscheduled' });
+	});
+});
+
+describe('rejoining after removal', () => {
+	// A (Mon 12–Fri 16) → B → C. B was dropped too early (Wed 14) with strict mode off, and C
+	// followed it (Thu 15). Removing B links A to C directly, which C no longer satisfies.
+	const setup = (c: Partial<SchedTask> = {}) => ({
+		map: mapOf(task('A', '2026-10-12', 5), task('B', '2026-10-14', 1), task('C', '2026-10-15', 1, c), task('D', '2026-10-16', 1)),
+		deps: [
+			{ predecessorId: 'A', successorId: 'B', lagDays: 0 },
+			{ predecessorId: 'B', successorId: 'C', lagDays: 0 },
+			{ predecessorId: 'C', successorId: 'D', lagDays: 0 }
+		]
+	});
+	const bridge = { predecessorId: 'A', successorId: 'C', lagDays: 0 };
+
+	it('pushes the rejoined successor and what follows it', () => {
+		const { map, deps } = setup();
+		const { pushed, deps: after } = rejoin(new Set(['B']), [bridge], map, deps);
+		expect(map.has('B')).toBe(false);
+		expect(after).toContainEqual(bridge);
+		expect(after.some((d) => d.predecessorId === 'B' || d.successorId === 'B')).toBe(false);
+		expect(pushed.get('C')?.startDate).toBe('2026-10-19');
+		expect(pushed.get('D')?.startDate).toBe('2026-10-20');
+	});
+
+	it('counts the lags carried by the bridge', () => {
+		const { map, deps } = setup();
+		const { pushed } = rejoin(new Set(['B']), [{ ...bridge, lagDays: 2 }], map, deps);
+		expect(pushed.get('C')?.startDate).toBe('2026-10-21'); // Fri 16 + 2 working days, then the next
+	});
+
+	it('never moves a started successor', () => {
+		const { map, deps } = setup({ status: 'in_progress' });
+		const { pushed } = rejoin(new Set(['B']), [bridge], map, deps);
+		expect(pushed.size).toBe(0);
+		expect(map.get('C')?.startDate).toBe('2026-10-15');
+	});
+
+	it('leaves the predecessor\'s other successors alone, even in conflict', () => {
+		const { map, deps } = setup();
+		map.set('E', task('E', '2026-10-13', 1)); // already too early after A
+		const { pushed } = rejoin(new Set(['B']), [bridge], map, [...deps, { predecessorId: 'A', successorId: 'E', lagDays: 0 }]);
+		expect(pushed.has('E')).toBe(false);
+	});
+
+	it('pushes nothing when the removed task was placed correctly', () => {
+		const map = mapOf(task('A', '2026-10-12', 2), task('B', '2026-10-14', 1), task('C', '2026-10-15', 1));
+		const deps = [{ predecessorId: 'A', successorId: 'B', lagDays: 0 }, { predecessorId: 'B', successorId: 'C', lagDays: 0 }];
+		expect(rejoin(new Set(['B']), [bridge], map, deps).pushed.size).toBe(0);
 	});
 });

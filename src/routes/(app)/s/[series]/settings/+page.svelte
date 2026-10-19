@@ -522,6 +522,7 @@
 	type RemovePreview = {
 		archive: boolean; reason?: string | null; deletesTasks: number; keepsTasks: number;
 		relinked: number; books?: string[]; batchId?: string;
+		pushed?: { label: string; from: string; to: string; scheduleState: string }[];
 	};
 	let removePending = $state<{ kind: 'stage' | 'book'; id: string; label: string; preview: RemovePreview } | null>(null);
 
@@ -547,6 +548,7 @@
 		const parts: string[] = [];
 		if (p.deletesTasks) parts.push(`${plural(p.deletesTasks, 'not-started task is', 'not-started tasks are')} deleted${p.books?.length ? ` (${p.books.join(', ')})` : ''}`);
 		if (p.relinked) parts.push(`${plural(p.relinked, 'dependency is', 'dependencies are')} relinked around them`);
+		if (p.pushed?.length) parts.push(`the relinked tasks push ${plural(p.pushed.length, 'task', 'tasks')} later (${p.pushed.slice(0, 4).map((x) => `${x.label}: ${fmtDate(x.from)} → ${fmtDate(x.to)}`).join('; ')}${p.pushed.length > 4 ? '; …' : ''})`);
 		parts.push(p.archive
 			? `it is archived rather than deleted, because ${p.reason ?? `${plural(p.keepsTasks, 'Done task is', 'Done tasks are')} kept as history`}; it disappears from the matrix, swimlane and projections`
 			: 'nothing has started, so it is deleted');
@@ -1328,7 +1330,13 @@
 													<p>
 														<strong>Skip {p.stage} for {p.book}.</strong>
 														{p.deletesTask ? `Its task is removed${p.relinked ? ` and ${plural(p.relinked, 'dependency is', 'dependencies are')} relinked around it` : ''}.` : 'It has no task yet.'}
+														{#if p.pushed?.length}That pushes {plural(p.pushed.length, 'task', 'tasks')}:{/if}
 													</p>
+													{#if p.pushed?.length}
+														<ul class="impact-list">
+															{#each p.pushed.slice(0, 6) as x (x.label)}<li>{x.label}: {fmtDate(x.from)} → {fmtDate(x.to)}</li>{/each}
+														</ul>
+													{/if}
 												{/if}
 												<div class="form-foot">
 													<button type="button" class="btn btn-ghost btn-lg" onclick={() => (skipPending = null)}>Cancel</button>

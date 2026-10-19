@@ -12,7 +12,7 @@ import { planRelink } from '../schedule/relink.ts';
 import { loadSeriesContext } from './series-context.ts';
 import { planNewTasks, writePlan } from './stage-tasks.ts';
 import { seriesPattern } from './pipeline-structure.ts';
-import { deleteTasks, isStarted, logger } from './removal.ts';
+import { deleteTasks, isStarted, logger, planRejoin, pushedReport, writeRejoin } from './removal.ts';
 
 type Dep = typeof dependencies.$inferSelect;
 
@@ -45,17 +45,23 @@ export async function skipStage(opts: { bookId: string; stageId: string; actorId
 		? await db.select().from(dependencies).where(inArray(dependencies.successorId, [...ctx.taskMap.keys()]))
 		: [];
 	const { touching, bridges } = task ? planRelink(new Set([task.id]), allDeps, ulid) : { touching: [], bridges: [] };
+	const rejoined = await planRejoin(book.seriesId, new Set(task ? [task.id] : []), bridges, ctx);
 
-	const report = { book: book.code, stage: stage.name, deletesTask: !!task, relinked: bridges.length };
+	const report = {
+		book: book.code, stage: stage.name, deletesTask: !!task, relinked: bridges.length,
+		pushed: pushedReport(rejoined.ctx, rejoined.original, rejoined.pushed),
+	};
 	if (opts.preview) return { preview: true as const, ...report };
 
 	const batchId = ulid();
-	const log = logger(book.seriesId, opts.actorId, batchId, new Date().toISOString());
+	const now = new Date().toISOString();
+	const log = logger(book.seriesId, opts.actorId, batchId, now);
 
 	await db.transaction(async (tx) => {
 		await tx.insert(bookStageSkips).values({ bookId: book.id, stageId: stage.id });
 		await tx.insert(activityLog).values(log('skip', `${book.id}:${stage.id}`, 'create', null, { bookId: book.id, stageId: stage.id }));
 		if (task) await deleteTasks(tx, log, [task], touching, bridges);
+		await writeRejoin(tx, rejoined.pushed, { seriesId: book.seriesId, actorId: opts.actorId, batchId, now, original: rejoined.original });
 	});
 	return { preview: false as const, ...report, batchId };
 }

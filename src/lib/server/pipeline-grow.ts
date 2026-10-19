@@ -14,7 +14,7 @@ import type { StageLink } from '../schedule/pattern.ts';
 import { planRelink } from '../schedule/relink.ts';
 import { loadSeriesContext } from './series-context.ts';
 import { seriesPattern } from './pipeline-structure.ts';
-import { deleteTasks, isStarted, logger } from './removal.ts';
+import { deleteTasks, isStarted, logger, planRejoin } from './removal.ts';
 import { describePlan, planNewTasks, writePlan } from './stage-tasks.ts';
 
 type StageRow = typeof stages.$inferSelect;
@@ -196,16 +196,18 @@ export async function changeTrack(opts: { bookId: string; trackId: string; actor
 	const gains = newOnly.filter((s) => !stillSkipped.has(s.id) && !own.some((t) => t.stageId === s.id));
 
 	const deps = await seriesDeps(book.seriesId);
-	const { touching, bridges } = planRelink(new Set(doomed.map((t) => t.id)), deps, ulid);
-	const ctx = await loadSeriesContext(book.seriesId);
-	const original = new Map([...ctx.taskMap].map(([k, v]) => [k, { ...v }]));
-	for (const t of doomed) ctx.taskMap.delete(t.id);
-	ctx.tasksData = ctx.tasksData.filter((t) => !doomed.some((d) => d.id === t.id));
+	const doomedIds = new Set(doomed.map((t) => t.id));
+	const { touching, bridges } = planRelink(doomedIds, deps, ulid);
+	// The removed stages first, rejoined and pushed (spec: Rejoining after removal); the new
+	// stages are then placed after that.
+	const { ctx, original, pushed: rejoinPushed } = await planRejoin(book.seriesId, doomedIds, bridges);
 	const afterRemoval = [...deps.filter((d) => !touching.includes(d)), ...bridges];
 	const plan = planNewTasks({
 		ctx, deps: afterRemoval, pattern: await seriesPattern(book.seriesId), today: opts.today,
 		gains: [{ bookId: book.id, stages: gains }],
 	});
+	// One write per task: where both pushed it, the later placement (the new stages') wins.
+	plan.pushed = new Map([...rejoinPushed, ...plan.pushed]);
 
 	const allStages = await db.select({ id: stages.id, name: stages.name }).from(stages).where(eq(stages.seriesId, book.seriesId));
 	const stageName = new Map(allStages.map((s) => [s.id, s.name]));

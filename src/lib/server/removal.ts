@@ -14,8 +14,10 @@ import {
 	stages, taskAssignees, taskComments, tasks
 } from '#lib/server/db/schema.ts';
 import { parseRule } from '../schedule/deadlines.ts';
-import type { Tx } from './schedule-write.ts';
+import { writeTaskChanges, type Tx } from './schedule-write.ts';
 import { planRelink } from '../schedule/relink.ts';
+import { loadSeriesContext, type SeriesContext } from './series-context.ts';
+import { pushChanges, rejoin, type PropResult, type SchedTask } from './scheduler.ts';
 
 type Dep = typeof dependencies.$inferSelect;
 type TaskRow = typeof tasks.$inferSelect;
@@ -67,7 +69,31 @@ export async function deleteTasks(tx: Tx, log: Log, doomed: TaskRow[], touching:
 	}
 }
 
-async function seriesDeps(seriesId: string): Promise<Dep[]> {
+/**
+ * Rejoining after removal (spec): the tasks the bridged links push, worked out on the
+ * series' schedule with the doomed tasks gone. `ctx` is that schedule afterwards, so a
+ * caller that adds tasks next (a track change) places them after the push.
+ */
+export async function planRejoin(seriesId: string, doomedIds: Set<string>, bridges: Dep[], loaded?: SeriesContext) {
+	const ctx = loaded ?? (await loadSeriesContext(seriesId));
+	const original = new Map([...ctx.taskMap].map(([k, v]) => [k, { ...v }]));
+	const { pushed } = rejoin(doomedIds, bridges, ctx.taskMap, ctx.depList, ctx.rules);
+	ctx.tasksData = ctx.tasksData.filter((t) => !doomedIds.has(t.id));
+	return { ctx, original, pushed };
+}
+
+/** Pushed tasks as previews list them. */
+export function pushedReport(ctx: SeriesContext, original: Map<string, SchedTask>, pushed: PropResult) {
+	return [...pushed].map(([id, p]) => ({ label: ctx.labels.get(id) ?? id, from: original.get(id)?.startDate ?? '', to: p.startDate, scheduleState: p.scheduleState }));
+}
+
+/** Save the push in the removal's transaction and batch, so one undo restores everything. */
+export async function writeRejoin(tx: Tx, pushed: PropResult, opts: { seriesId: string; actorId: string; batchId: string; now: string; original: Map<string, SchedTask> }) {
+	if (pushed.size) await writeTaskChanges(tx, { ...opts, changes: pushChanges(pushed) });
+}
+
+/** Every dependency in a series, ids included. */
+export async function seriesDeps(seriesId: string): Promise<Dep[]> {
 	return db.select({ d: dependencies }).from(dependencies)
 		.innerJoin(tasks, eq(tasks.id, dependencies.successorId))
 		.innerJoin(books, eq(books.id, tasks.bookId))
@@ -98,10 +124,12 @@ export async function removeBook(opts: { bookId: string; actorId: string; previe
 	const reason = done.length ? `${done.length} Done ${done.length === 1 ? 'task is' : 'tasks are'} kept as history`
 		: book.isbn ? 'it has an ISBN' : approval.length ? 'it is approved for print' : null;
 
-	const { touching, bridges } = planRelink(new Set(doomed.map((t) => t.id)), await seriesDeps(book.seriesId), ulid);
+	const doomedIds = new Set(doomed.map((t) => t.id));
+	const { touching, bridges } = planRelink(doomedIds, await seriesDeps(book.seriesId), ulid);
+	const { ctx, original, pushed } = await planRejoin(book.seriesId, doomedIds, bridges);
 	const report = {
 		book: book.code, archive, reason, deletesTasks: doomed.length, keepsTasks: done.length,
-		relinked: bridges.length,
+		relinked: bridges.length, pushed: pushedReport(ctx, original, pushed),
 	};
 	if (opts.preview) return { preview: true as const, ...report };
 
@@ -110,6 +138,7 @@ export async function removeBook(opts: { bookId: string; actorId: string; previe
 	const log = logger(book.seriesId, opts.actorId, batchId, now);
 	await db.transaction(async (tx) => {
 		await deleteTasks(tx, log, doomed, touching, bridges);
+		await writeRejoin(tx, pushed, { seriesId: book.seriesId, actorId: opts.actorId, batchId, now, original });
 		if (archive) {
 			await tx.update(books).set({ archivedAt: now, version: book.version + 1 }).where(eq(books.id, book.id));
 			await tx.insert(activityLog).values(log('book', book.id, 'archive', { archivedAt: null, version: book.version }, { archivedAt: now, version: book.version + 1 }));
@@ -145,7 +174,9 @@ export async function removeStage(opts: { stageId: string; actorId: string; prev
 	const done = own.filter((r) => r.t.status === 'done');
 	const doomed = own.filter((r) => r.t.status !== 'done').map((r) => r.t);
 	const archive = done.length > 0;
-	const { touching, bridges } = planRelink(new Set(doomed.map((t) => t.id)), await seriesDeps(stage.seriesId), ulid);
+	const doomedIds = new Set(doomed.map((t) => t.id));
+	const { touching, bridges } = planRelink(doomedIds, await seriesDeps(stage.seriesId), ulid);
+	const { ctx, original, pushed } = await planRejoin(stage.seriesId, doomedIds, bridges);
 
 	// The series' pattern bridges the stage the same way: its predecessors to its successors.
 	const links = await db.select().from(stageLinks).where(or(eq(stageLinks.fromStageId, stage.id), eq(stageLinks.toStageId, stage.id)));
@@ -158,7 +189,7 @@ export async function removeStage(opts: { stageId: string; actorId: string; prev
 	const report = {
 		stage: stage.name, archive, deletesTasks: doomed.length, keepsTasks: done.length,
 		books: [...new Set(doomed.map((t) => own.find((r) => r.t.id === t.id)!.code))],
-		relinked: bridges.length, patternRelinked: linkBridges.length,
+		relinked: bridges.length, patternRelinked: linkBridges.length, pushed: pushedReport(ctx, original, pushed),
 	};
 	if (opts.preview) return { preview: true as const, ...report };
 
@@ -167,6 +198,7 @@ export async function removeStage(opts: { stageId: string; actorId: string; prev
 	const log = logger(stage.seriesId, opts.actorId, batchId, now);
 	await db.transaction(async (tx) => {
 		await deleteTasks(tx, log, doomed, touching, bridges);
+		await writeRejoin(tx, pushed, { seriesId: stage.seriesId, actorId: opts.actorId, batchId, now, original });
 		for (const l of links) {
 			await tx.delete(stageLinks).where(and(eq(stageLinks.fromStageId, l.fromStageId), eq(stageLinks.toStageId, l.toStageId)));
 			await tx.insert(activityLog).values(log('stage_link', `${l.fromStageId}>${l.toStageId}`, 'delete', l, null));

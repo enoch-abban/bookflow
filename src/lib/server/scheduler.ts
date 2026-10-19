@@ -184,6 +184,46 @@ export function propagate(
 	return changed;
 }
 
+/**
+ * Rejoining after removal (spec): with `removeIds` gone and `bridges` linking their
+ * predecessors to their successors (lags added), push each bridged successor that now
+ * starts before its predecessors allow, then everything after it, as propagation does.
+ * The push starts at the bridged successors only, so the predecessors' other successors
+ * are left alone, conflicts included.
+ *
+ * @param taskMap Mutable: removed tasks are deleted and pushed tasks updated in place.
+ * @returns Placement for every pushed task, and the dependencies after the removal.
+ */
+export function rejoin(
+	removeIds: Set<string>,
+	bridges: SchedDep[],
+	taskMap: Map<string, SchedTask>,
+	deps: SchedDep[],
+	rules: WindowRules = NO_WINDOWS
+): { pushed: PropResult; deps: SchedDep[] } {
+	for (const id of removeIds) taskMap.delete(id);
+	const after = [...deps.filter((d) => !removeIds.has(d.predecessorId) && !removeIds.has(d.successorId)), ...bridges];
+	const { predMap } = buildPredMap(after);
+	const pushed: PropResult = new Map();
+	for (const succId of new Set(bridges.map((b) => b.successorId))) {
+		const succ = taskMap.get(succId);
+		if (!succ || isFrozen(succ)) continue;
+		const earliest = earliestStart(succId, taskMap, predMap);
+		if (!earliest || succ.startDate >= earliest) continue;
+		const next = settle(succ, earliest, rules);
+		if (samePlacement(next, succ)) continue;
+		taskMap.set(succId, { ...succ, ...next });
+		pushed.set(succId, next);
+	}
+	for (const [id, p] of propagate(new Set(pushed.keys()), taskMap, after, rules)) pushed.set(id, p);
+	return { pushed, deps: after };
+}
+
+/** Pushed placements as changes for writeTaskChanges. */
+export function pushChanges(pushed: PropResult) {
+	return [...pushed].map(([id, p]) => ({ id, ...p, windowId: p.windowId ?? null, action: p.scheduleState === 'unscheduled' ? 'unschedule' : 'move' }));
+}
+
 // ── Status-transition validation ──────────────────────────────────────────────
 
 const ALLOWED: Record<string, string[]> = {

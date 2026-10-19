@@ -2,7 +2,7 @@ import type { RequestHandler } from './$types';
 import { json, error } from '@sveltejs/kit';
 import { ulid } from 'ulid';
 import { db, writeAll, type Write } from '#lib/server/db/index.ts';
-import { tasks, taskAssignees, dependencies, activityLog, people, seriesMembers } from '#lib/server/db/schema.ts';
+import { tasks, taskAssignees, activityLog, people, seriesMembers } from '#lib/server/db/schema.ts';
 import { eq, and } from 'drizzle-orm';
 import { parseBody, versionConflict, loadTaskWithSeries, resolvePerson } from '#lib/server/api-auth.ts';
 import { isAllowedTransition } from '#lib/server/scheduler.ts';
@@ -12,6 +12,8 @@ import { refit } from '#lib/server/refit.ts';
 import { refitChanges, refitReport, taskChangeQueries } from '#lib/server/schedule-write.ts';
 import { taskDetail } from '#lib/server/task-detail.ts';
 import { background, notifyStatusChange } from '#lib/server/notifications.ts';
+import { deleteTasks, logger, planRejoin, seriesDeps, writeRejoin } from '#lib/server/removal.ts';
+import { planRelink } from '#lib/schedule/relink.ts';
 
 // ── PATCH /api/tasks/:id ─────────────────────────────────────────────────────
 // GET /api/tasks/:id — everything the task drawer shows, for any series member.
@@ -128,7 +130,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 
 // ── DELETE /api/tasks/:id ────────────────────────────────────────────────────
 // Body: { version }
-// Relinks predecessor→successor dependencies, then removes the task.
+// Removes the task, rejoining its predecessors to its successors and pushing what that needs.
 
 export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 	const { id } = params;
@@ -151,43 +153,18 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 
 	if (!isAdmin && mem?.role !== 'coordinator') throw error(403, 'Coordinator role required');
 
-	// Find all deps involving this task
-	const preds = await db.select().from(dependencies).where(eq(dependencies.successorId, id));
-	const succs = await db.select().from(dependencies).where(eq(dependencies.predecessorId, id));
+	// Rejoin its predecessors to its successors, lags added, and push what that needs (spec:
+	// Rejoining after removal); saved like any removal, as one batch that undo restores.
+	const { touching, bridges } = planRelink(new Set([id]), await seriesDeps(seriesId), ulid);
+	const { original, pushed } = await planRejoin(seriesId, new Set([id]), bridges);
 
+	const batchId = ulid();
 	const now = new Date().toISOString();
-
-	await db.transaction(async tx => {
-		// Relink: for each predecessor, create dep to each successor (skip dupes)
-		for (const pred of preds) {
-			for (const succ of succs) {
-				await tx.insert(dependencies).values({
-					id:            ulid(),
-					predecessorId: pred.predecessorId,
-					successorId:   succ.successorId,
-					lagDays:       pred.lagDays + succ.lagDays,
-				}).onConflictDoNothing();
-			}
-		}
-
-		// Remove all deps touching this task (cascade handles it, but belt-and-suspenders)
-		await tx.delete(dependencies).where(eq(dependencies.successorId, id));
-		await tx.delete(dependencies).where(eq(dependencies.predecessorId, id));
-
-		// Remove task (cascades to taskAssignees, reviewCycles, comments)
-		await tx.delete(tasks).where(eq(tasks.id, id));
-
-		await tx.insert(activityLog).values({
-			id:         ulid(),
-			seriesId,
-			actorId:    personId,
-			entity:     'task',
-			entityId:   id,
-			action:     'delete',
-			beforeJson: JSON.stringify(task),
-			createdAt:  now,
-		});
+	const log = logger(seriesId, personId, batchId, now);
+	await db.transaction(async (tx) => {
+		await deleteTasks(tx, log, [task], touching, bridges);
+		await writeRejoin(tx, pushed, { seriesId, actorId: personId, batchId, now, original });
 	});
 
-	return json({ deleted: id });
+	return json({ deleted: id, relinked: bridges.length, pushed: [...pushed.keys()], batchId });
 };
