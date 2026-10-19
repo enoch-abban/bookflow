@@ -222,7 +222,7 @@ Only Admin and Coordinator roles can drag, resize, create and link. Everyone els
 
 ### Conflicts and concurrency
 
-- Dropping a task before its predecessor ends is allowed but flagged: the arrow turns danger-coloured and the task gets an At risk flag. Strict mode, switched on in series settings by an admin or coordinator, blocks such drops instead and shows a Strict badge in the swimlane toolbar.
+- Dropping a task before its predecessor ends is allowed but flagged: the arrow turns danger-coloured and the task gets an At risk flag. Strict mode, switched on in series settings by an admin or coordinator, blocks such changes instead and shows a Strict badge in the swimlane toolbar. The server refuses (422, code predecessor\_conflict, naming the predecessors) any move, resize, bulk move, new task or new dependency that would leave a task starting before a predecessor allows, using the same earliest-start rule as propagation, gates and lags included. Because propagation already pushes not-started successors, in practice this catches moving a task earlier than its predecessors allow, and any change whose push would reach a started task, which never moves. Turning strict mode on leaves existing conflicts alone; they stay flagged until fixed.
 - Double-booking a person is allowed; it shows in the workload view. Production is the exception: printing is capped at 2 books per working day.
 - Each task carries a version number. If two people edit the same task, the second save is rejected, the bar snaps to the server state and a toast explains why.
 - Other users' changes arrive by polling every 10 seconds and animate into place.
@@ -877,13 +877,13 @@ Pages load their data through SvelteKit load functions; every write goes through
 | `POST /api/series/:id/windows`, `PATCH /api/windows/:id` | `{ label, startDate, endDate, preview? }` | Window, plus every task moved, re-placed, flagged Outside window or made unscheduled, saved as one undoable batch; with preview set, the same report without saving; 422 if it would overlap another window | Admin, coordinator |
 | `DELETE /api/windows/:id` | `{ preview? }` | Removed id, plus the same refit report; started and Done tasks in it keep their dates and lose their window | Admin, coordinator |
 | `PATCH /api/books/:id/publishing` | `{ isbn, edition, version, confirmChange? }` | { book, approvalWithdrawn }, where approvalWithdrawn is true when the print approval was removed and the gate task reset to Not started; 422 for an invalid or duplicate ISBN-13; 409 `confirm_required` when the book is already approved for print and `confirmChange` is not true | Admin, coordinator |
-| `POST /api/tasks/:id/schedule` | `{ start, durationDays, windowId, version }` | Changed tasks, projected dates, or a window error | Admin, coordinator |
+| `POST /api/tasks/:id/schedule` | `{ start, durationDays, windowId, version }` | Changed tasks, projected dates, or a window or strict-mode error | Admin, coordinator |
 | `POST /api/tasks/bulk-schedule` | `{ moves: [{ id, start, durationDays, windowId, version }] }` | Changed tasks, or the failing task ids (rules below) | Admin, coordinator |
 | `POST /api/tasks/:id/assignees` | `{ personIds, leadId, version }` | Updated task | Admin, coordinator |
 | `PATCH /api/tasks/:id` | Any of `title, notes, status, blockedReason, feedbackUrl, overflowAllowed, version`, preview? | Updated task, or 422 for a status move the rules do not allow. When overflowAllowed is turned off on a task using its overflow, also the refit report, saved as one undoable batch; with preview set, the report only | Coordinator; assignees for status, notes and feedback link |
 | `POST /api/tasks` | `{ bookId, stageId, windowId, start, durationDays, personIds }` | New task, changed tasks | Admin, coordinator |
 | `DELETE /api/tasks/:id` | `{ version }` | Removed id, relinked dependencies | Admin, coordinator |
-| `POST /api/dependencies` | `{ predecessorId, successorId, lagDays }` | Dependency, changed tasks, or a cycle error | Admin, coordinator |
+| `POST /api/dependencies` | `{ predecessorId, successorId, lagDays }` | Dependency, changed tasks, a cycle error, or in strict mode a conflict error when the successor has already started | Admin, coordinator |
 | `DELETE /api/dependencies/:id` | none | Removed id | Admin, coordinator |
 | `POST /api/tasks/:id/review` | `{ outcome, summary, version }` | Updated task, review cycle | Assignee of that review task, coordinator |
 | `POST /api/books/:id/approve-print` | `{ note }` | Approval, with the book's print approval gate task set to Done in the same transaction; or 409 with the list of unfinished tasks blocking it | Admin, coordinator |
@@ -900,7 +900,7 @@ Pages load their data through SvelteKit load functions; every write goes through
 
 A stale `version` returns HTTP 409 with the current task so the client can snap back. A permission failure returns 403. Validation uses Zod schemas shared between client and server.
 
-**Bulk schedule.** Used when several selected bars move together. The server checks every move before saving any: each must land inside its target window (plus the overflow allowance for tasks allowed to overflow), unless its stage ignores windows, and every version must be current. If any check fails, nothing is saved and the response names the failing tasks (409 for stale versions, 422 for window violations); moves are never clamped to fit. A valid request applies all the moves, runs one propagation pass from the moved tasks, and saves everything in one transaction under one batch id.
+**Bulk schedule.** Used when several selected bars move together. The server checks every move before saving any: each must land inside its target window (plus the overflow allowance for tasks allowed to overflow), unless its stage ignores windows, and every version must be current. If any check fails, nothing is saved and the response names the failing tasks (409 for stale versions, 422 for window or strict-mode violations); moves are never clamped to fit. A valid request applies all the moves, runs one propagation pass from the moved tasks, and saves everything in one transaction under one batch id.
 
 **Undo and redo.** Every action, together with the moves it propagated, shares one batch id. The undo button walks back through the current user's last 50 batches on the current series, and redo reapplies them; the endpoint enforces the same limit, so a user can only undo their own recent batches. An admin can undo any batch from the activity log page. In every case the server first checks that none of the batch's tasks has changed since; if one has, the undo is refused with those tasks named, rather than overwriting someone's later edit.
 
