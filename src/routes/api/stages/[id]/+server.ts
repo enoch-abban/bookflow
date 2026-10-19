@@ -10,8 +10,8 @@ import { removeStage } from '#lib/server/removal.ts';
 export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	const stage = await loadStage(params.id);
 	const { personId } = await requireCoord(locals, stage.seriesId);
-	const { preview, ...edit } = parseOr400(updateStageSchema, await parseBody(request));
-	return json(await editStage({ stage, edit, actorId: personId, preview: !!preview }));
+	const { preview, acknowledge, ...edit } = parseOr400(updateStageSchema, await parseBody(request));
+	return json(await editStage({ stage, edit, actorId: personId, preview: !!preview, acknowledge }));
 };
 
 // DELETE /api/stages/:id — remove a stage from every book: not-started tasks go, started

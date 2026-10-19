@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { deriveEnd, type SchedDep, type SchedTask } from '#lib/schedule/scheduler.ts';
-import { assertStrict, strictRefusal } from './strict.ts';
+import { assertAcknowledged, assertStrict, exemptConflicts, strictRefusal } from './strict.ts';
 
 const task = (id: string, start: string, dur: number, extra: Partial<SchedTask> = {}): SchedTask => ({
 	id, startDate: start, endDate: deriveEnd(start, dur), durationDays: dur, status: 'not_started',
@@ -46,5 +46,29 @@ describe('assertStrict', () => {
 	it('does nothing when strict mode is off or nothing conflicts', () => {
 		expect(() => assertStrict(ctx(0), before, earlyB, ['B'])).not.toThrow();
 		expect(() => assertStrict(ctx(1), before, before, ['B'])).not.toThrow();
+	});
+});
+
+describe('exempt changes', () => {
+	// A refit moved A later, so the started B now starts too early.
+	const startedB = task('B', '2026-10-15', 1, { status: 'in_progress' });
+	const was = { taskMap: new Map([['A', task('A', '2026-10-12', 3)], ['B', startedB]]), deps };
+	const now = { taskMap: new Map([['A', task('A', '2026-10-13', 3)], ['B', startedB]]), deps };
+
+	it('lists the conflicts for the preview, worded like a refusal', () => {
+		const [c] = exemptConflicts(ctx(1), was, now);
+		expect(c).toMatchObject({ taskId: 'B', started: true });
+		expect(c.message).toContain('InDesign · G9 has started');
+		expect(exemptConflicts(ctx(0), was, now)).toEqual([]);
+	});
+
+	it('confirms only when every conflict was acknowledged', () => {
+		const list = exemptConflicts(ctx(1), was, now);
+		expect(() => assertAcknowledged(list, ['B'])).not.toThrow();
+		expect(() => assertAcknowledged([], undefined)).not.toThrow();
+		let thrown: { status?: number; body?: { error?: string; taskIds?: string[] } } | undefined;
+		try { assertAcknowledged(list, []); } catch (e) { thrown = e as typeof thrown; }
+		expect(thrown?.status).toBe(422);
+		expect(thrown?.body).toMatchObject({ error: 'conflicts_unacknowledged', taskIds: ['B'] });
 	});
 });

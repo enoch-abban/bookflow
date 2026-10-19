@@ -9,6 +9,7 @@ import { activityLog, tasks } from '#lib/server/db/schema.ts';
 import type { SchedTask } from './scheduler.ts';
 import type { RefitResult } from './refit.ts';
 import { projectedFinish, type SeriesContext } from './series-context.ts';
+import { exemptConflicts } from './strict.ts';
 
 export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -94,6 +95,8 @@ export function refitReport(ctx: SeriesContext, original: Map<string, SchedTask>
 	const count = (k: string) => result.changes.filter((c) => c.kind === k).length;
 	const winLabel = new Map(ctx.windows.map((w) => [w.id, w.label]));
 	return {
+		// Strict mode: conflicts the refit causes (a started task it could not move), to acknowledge.
+		strictConflicts: exemptConflicts(ctx, { taskMap: original, deps: ctx.depList }, { taskMap: ctx.taskMap, deps: ctx.depList }),
 		moved: count('moved'),
 		unscheduled: count('unscheduled'),
 		placed: count('placed'),

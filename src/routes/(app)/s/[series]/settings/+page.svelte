@@ -95,13 +95,18 @@
 			from: { startDate: string; window: string | null };
 			to: { startDate: string; window: string | null };
 		}[];
+		/** Strict mode: tasks the change would leave starting too early, to acknowledge. */
+		strictConflicts: { taskId: string; label: string; message: string; started: boolean }[];
 	};
 	type SaveResult = { report: Report | null; batchId?: string };
 	let pending = $state<{ body: Record<string, unknown>; report: Report } | null>(null);
 	let lastBatch = $state<string | null>(null);
 
 	const impactful = (r: Report | null): r is Report =>
-		!!r && r.moved + r.unscheduled + r.placed + r.rewindowed + r.outsideWindow.length > 0;
+		!!r && r.moved + r.unscheduled + r.placed + r.rewindowed + r.outsideWindow.length + r.strictConflicts.length > 0;
+	// Strict mode: the preview whose conflicts were acknowledged, and their ids for the confirm.
+	let acknowledged = $state<Report | null>(null);
+	const ackIds = (r: Report | null) => (r?.strictConflicts.length ? { acknowledge: r.strictConflicts.map((c) => c.taskId) } : {});
 	const sameImpact = (a: Report, b: Report) =>
 		a.moved === b.moved && a.unscheduled === b.unscheduled && a.placed === b.placed &&
 		a.outsideWindow.length === b.outsideWindow.length && a.projectedFinish.after === b.projectedFinish.after;
@@ -117,6 +122,8 @@
 			parts.push(plural(r.outsideWindow.length, 'started task is flagged Outside window', 'started tasks are flagged Outside window'));
 		if (r.projectedFinish.after && r.projectedFinish.after !== r.projectedFinish.before)
 			parts.push(`projected finish ${fmtDate(r.projectedFinish.after)}`);
+		if (r.strictConflicts.length)
+			parts.push(plural(r.strictConflicts.length, 'task is left starting before its predecessors allow', 'tasks are left starting before their predecessors allow'));
 		return parts.join(', ');
 	}
 
@@ -138,7 +145,7 @@
 
 	async function commitGeneral(body: Record<string, unknown>, previewed: Report | null) {
 		pending = null;
-		const res = await save(body, (f) => (generalFlash = f), () => (general = generalFromServer()));
+		const res = await save({ ...body, ...ackIds(previewed) }, (f) => (generalFlash = f), () => (general = generalFromServer()));
 		if (!res.ok) return;
 		const applied = res.data.report;
 		lastBatch = impactful(applied) ? (res.data.batchId ?? null) : null;
@@ -242,7 +249,7 @@
 	async function commitWindow(call: WinCall, previewed: Report | null) {
 		winPending = null;
 		busy = true;
-		const res = await api<SaveResult>(call.method, call.url, call.body);
+		const res = await api<SaveResult>(call.method, call.url, { ...call.body, ...ackIds(previewed) });
 		busy = false;
 		if (!res.ok) return (winFlash = { ok: false, text: res.message });
 		editingWin = null;
@@ -394,9 +401,9 @@
 		await commitStage(s, body);
 	}
 
-	async function commitStage(s: PStage, body: ReturnType<typeof stageBody>) {
+	async function commitStage(s: PStage, body: ReturnType<typeof stageBody>, previewed: Report | null = null) {
 		stagePending = null;
-		const result = await pipeCall('PATCH', `/api/stages/${s.id}`, body, `Saved ${body.name}.`);
+		const result = await pipeCall('PATCH', `/api/stages/${s.id}`, { ...body, ...ackIds(previewed) }, `Saved ${body.name}.`);
 		if (!result) return;
 		lastPipeBatch = result.batchId ?? null;
 		const parts = [impactful(result.report) ? summary(result.report) : '', result.dueDates.length ? plural(result.dueDates.length, 'due date updated', 'due dates updated') : '']
@@ -740,9 +747,22 @@
 			{/each}
 		</ul>
 		{#if report.changes.length > 8}<p class="hint">…and {report.changes.length - 8} more.</p>{/if}
+		{#if report.strictConflicts.length}
+			<div class="strict-ack">
+				<p><strong>Strict mode:</strong> this change is allowed, but it leaves {plural(report.strictConflicts.length, 'task', 'tasks')} starting before {report.strictConflicts.length === 1 ? 'its' : 'their'} predecessors allow. {report.strictConflicts.length === 1 ? 'It stays' : 'They stay'} flagged until fixed.</p>
+				<ul class="impact-list">
+					{#each report.strictConflicts.slice(0, 6) as c (c.taskId)}<li class="warn">{c.message}</li>{/each}
+				</ul>
+				{#if report.strictConflicts.length > 6}<p class="hint">…and {report.strictConflicts.length - 6} more.</p>{/if}
+				<label class="check">
+					<input type="checkbox" checked={acknowledged === report} onchange={(e) => (acknowledged = e.currentTarget.checked ? report : null)} />
+					I understand, and want to make this change anyway
+				</label>
+			</div>
+		{/if}
 		<div class="form-foot">
 			<button type="button" class="btn btn-ghost btn-lg" onclick={cancel}>Cancel</button>
-			<button type="button" class="btn btn-primary btn-lg" disabled={busy} onclick={apply}>Apply changes</button>
+			<button type="button" class="btn btn-primary btn-lg" disabled={busy || (report.strictConflicts.length > 0 && acknowledged !== report)} onclick={apply}>Apply changes</button>
 		</div>
 	</div>
 {/snippet}
@@ -1122,7 +1142,7 @@
 								<tr class="expand">
 									<td colspan="10">
 										{#if impactful(p.result.report)}
-											{@render impact(p.result.report, () => (stagePending = null), () => commitStage(p.stage, p.body))}
+											{@render impact(p.result.report, () => (stagePending = null), () => commitStage(p.stage, p.body, p.result.report))}
 										{:else}
 											<div class="impact" role="alertdialog" aria-label="Confirm due date changes">
 												<p><strong>This change updates {plural(p.result.dueDates.length, 'due date', 'due dates')}:</strong></p>
@@ -1635,6 +1655,9 @@
 	.impact p { margin: 0; }
 	.impact-list { margin: 0; padding-left: var(--sp-5); display: flex; flex-direction: column; gap: 2px; }
 	.impact-list .warn { color: var(--danger); }
+	.strict-ack { border-top: 1px solid var(--tertiary); padding-top: var(--sp-2); display: flex; flex-direction: column; gap: var(--sp-2); }
+	.strict-ack .check { display: flex; align-items: center; gap: var(--sp-2); font-weight: 600; cursor: pointer; }
+	.strict-ack .check input { accent-color: var(--primary); width: 16px; height: 16px; }
 
 	.tpl-save { display: grid; grid-template-columns: 1fr auto; gap: var(--sp-2) var(--sp-3); align-items: end; }
 	.tpl-save .hint, .tpl-save .notice { grid-column: 1 / -1; margin: 0; }

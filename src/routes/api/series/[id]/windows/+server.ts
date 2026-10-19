@@ -7,7 +7,7 @@ import { changeWindows } from '#lib/server/window-change.ts';
 // POST /api/series/:id/windows — add a window; refits the schedule when windows are enforced.
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const { personId } = await requireCoord(locals, params.id);
-	const { preview, ...fields } = parseOr400(createWindowSchema, await parseBody(request));
-	const res = await changeWindows({ seriesId: params.id, actorId: personId, op: { kind: 'create', fields }, preview: !!preview });
+	const { preview, acknowledge, ...fields } = parseOr400(createWindowSchema, await parseBody(request));
+	const res = await changeWindows({ seriesId: params.id, actorId: personId, op: { kind: 'create', fields }, preview: !!preview, acknowledge });
 	return json(res, { status: res.preview ? 200 : 201 });
 };

@@ -42,6 +42,10 @@ export function parseOr400<T>(schema: z.ZodType<T>, data: unknown): T {
 }
 
 const isoDate = z.iso.date('Use a YYYY-MM-DD date.');
+// Strict mode: the conflicts a previewed change would cause, acknowledged by task id on confirm.
+const acknowledge = z.array(z.string().min(1)).max(500).optional();
+const CONTROL = ['preview', 'acknowledge'];
+const someField = (b: object) => Object.keys(b).some((k) => !CONTROL.includes(k));
 
 export const updateSeriesSchema = z
 	.object({
@@ -58,8 +62,8 @@ export const updateSeriesSchema = z
 		windowOverflowDays: z.number().int().min(0).max(10)
 	})
 	.partial()
-	.extend({ preview: z.boolean().optional() })
-	.refine((b) => Object.keys(b).some((k) => k !== 'preview'), 'Nothing to update.');
+	.extend({ preview: z.boolean().optional(), acknowledge })
+	.refine(someField, 'Nothing to update.');
 
 export const memberSchema = z.object({
 	role: z.enum(['coordinator', 'contributor', 'viewer']),
@@ -75,18 +79,16 @@ const windowFields = {
 const endAfterStart = (w: { startDate?: string; endDate?: string }) => !w.startDate || !w.endDate || w.endDate >= w.startDate;
 
 export const createWindowSchema = z
-	.object({ ...windowFields, preview: z.boolean().optional() })
+	.object({ ...windowFields, preview: z.boolean().optional(), acknowledge })
 	.refine(endAfterStart, 'The window cannot end before it starts.');
 
 export const updateWindowSchema = z
-	.object({ ...windowFields, preview: z.boolean().optional() })
+	.object({ ...windowFields, preview: z.boolean().optional(), acknowledge })
 	.partial()
-	.refine((b) => Object.keys(b).some((k) => k !== 'preview'), 'Nothing to update.')
+	.refine(someField, 'Nothing to update.')
 	.refine(endAfterStart, 'The window cannot end before it starts.');
 
 // ── Pipeline edits (spec: Pipeline changes) ────────────────────────────────
-
-const someField = (b: object) => Object.keys(b).some((k) => k !== 'preview');
 
 export const updateTrackSchema = z.object({ name: z.string().trim().min(1, 'Enter a track name.').max(60) });
 
@@ -107,7 +109,8 @@ export const updateStageSchema = z
 		isExternal: z.boolean(),
 		ignoresWindows: z.boolean(),
 		deadlineRule: deadlineRuleSchema.nullable(),
-		preview: z.boolean()
+		preview: z.boolean(),
+		acknowledge: z.array(z.string().min(1)).max(500)
 	})
 	.partial()
 	.refine(someField, 'Nothing to update.');

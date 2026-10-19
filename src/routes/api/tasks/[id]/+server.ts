@@ -14,6 +14,7 @@ import { taskDetail } from '#lib/server/task-detail.ts';
 import { background, notifyStatusChange } from '#lib/server/notifications.ts';
 import { deleteTasks, logger, planRejoin, seriesDeps, writeRejoin } from '#lib/server/removal.ts';
 import { planRelink } from '#lib/schedule/relink.ts';
+import { assertAcknowledged } from '#lib/server/strict.ts';
 
 // ── PATCH /api/tasks/:id ─────────────────────────────────────────────────────
 // GET /api/tasks/:id — everything the task drawer shows, for any series member.
@@ -33,6 +34,8 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 		feedbackUrl?: string;
 		overflowAllowed?: boolean;
 		preview?: boolean;
+		/** Strict mode: the conflicts turning overflow off would cause, acknowledged by task id. */
+		acknowledge?: string[];
 		version: number;
 	}>(request);
 
@@ -90,6 +93,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	const result = ctx ? refit(ctx.taskMap, ctx.depList, ctx.rules) : null;
 	const report = ctx && result ? refitReport(ctx, original!, result) : null;
 	if (body.preview) return json({ preview: true, report });
+	if (report) assertAcknowledged(report.strictConflicts, Array.isArray(body.acknowledge) ? body.acknowledge : undefined);
 
 	if (Object.keys(updates).length === 0) {
 		// Nothing to change (same status, no other fields)

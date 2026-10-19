@@ -33,11 +33,48 @@ function refusal(ctx: Ctx, before: Plan, after: Plan, always: Iterable<string>) 
 		error: 'predecessor_conflict',
 		message: `Strict mode: ${describeConflict(ordered[0], label)}${more}`,
 		taskIds: ordered.map((c) => c.taskId),
-		conflicts: ordered.map((c) => ({
-			taskId: c.taskId, label: label(c.taskId), earliest: c.earliest, days: c.days, started: c.frozen,
-			predecessors: c.predecessorIds.map((id) => ({ id, label: label(id), endDate: after.taskMap.get(id)?.endDate ?? null }))
-		}))
+		conflicts: details(ordered, after, label)
 	};
+}
+
+/** Conflicts as responses and previews list them. */
+function details(conflicts: Conflict[], after: Plan, label: (id: string) => string) {
+	return conflicts.map((c) => ({
+		taskId: c.taskId, label: label(c.taskId), earliest: c.earliest, days: c.days, started: c.frozen,
+		message: describeConflict(c, label),
+		predecessors: c.predecessorIds.map((id) => ({ id, label: label(id), endDate: after.taskMap.get(id)?.endDate ?? null }))
+	}));
+}
+
+export type ConflictDetail = ReturnType<typeof details>[number];
+
+/**
+ * Exempt changes (window, overflow, enforcement and stage window or deadline rules) go ahead
+ * in strict mode, but their preview lists the conflicts they would cause; empty when the
+ * series is not strict.
+ */
+export function exemptConflicts(ctx: Ctx, before: Plan, after: Plan): ConflictDetail[] {
+	if (!ctx.series.strictMode) return [];
+	const label = (id: string) => ctx.labels.get(id) ?? 'A task';
+	const found = strictConflicts(before, after);
+	return details([...found.filter((c) => c.frozen), ...found.filter((c) => !c.frozen)], after, label);
+}
+
+/**
+ * Confirming an exempt change: every conflict it causes must have been acknowledged, by task
+ * id, from its preview. A conflict that appeared since the preview is refused with the fresh
+ * list, so it cannot slip through on an earlier acknowledgement.
+ */
+export function assertAcknowledged(conflicts: ConflictDetail[], acknowledged: string[] = []): void {
+	const missing = conflicts.filter((c) => !acknowledged.includes(c.taskId));
+	if (!missing.length) return;
+	const names = missing.slice(0, 3).map((c) => c.label).join(', ') + (missing.length > 3 ? ` and ${missing.length - 3} more` : '');
+	throw error(422, {
+		error: 'conflicts_unacknowledged',
+		message: `Strict mode: this change would leave ${missing.length === 1 ? 'a task' : `${missing.length} tasks`} starting before ${missing.length === 1 ? 'its' : 'their'} predecessors allow (${names}). Review them in the preview and acknowledge them to go ahead.`,
+		taskIds: missing.map((c) => c.taskId),
+		conflicts: missing
+	});
 }
 
 /**

@@ -68,6 +68,7 @@
 		if (id && !shown) opener = document.activeElement as HTMLElement | null;
 		shown = id;
 		notice = null;
+		overflowAsk = null;
 		if (id) {
 			load(id);
 			tick().then(() => closeBtn?.focus());
@@ -127,9 +128,27 @@
 		write(api('POST', `${taskUrl()}/schedule`, { start: dates.start, durationDays: Number(dates.duration), version: v() }), 'Dates saved; later tasks moved along where needed.');
 	}
 
-	function toggleOverflow() {
-		write(api('PATCH', taskUrl(), { overflowAllowed: !detail!.task.overflowAllowed, version: v() }),
-			detail!.task.overflowAllowed ? 'Overflow no longer allowed.' : 'Overflow allowed.');
+	// Turning overflow off can refit the schedule. In strict mode, if that would leave a task
+	// starting before its predecessors allow, the drawer lists them and asks first.
+	type StrictConflict = { taskId: string; message: string };
+	let overflowAsk = $state<StrictConflict[] | null>(null);
+
+	async function toggleOverflow() {
+		const on = !detail!.task.overflowAllowed;
+		if (!on) {
+			busy = true;
+			const res = await api<{ report: { strictConflicts: StrictConflict[] } | null }>('PATCH', taskUrl(), { overflowAllowed: false, version: v(), preview: true });
+			busy = false;
+			const conflicts = res.ok ? (res.data.report?.strictConflicts ?? []) : [];
+			if (conflicts.length) return (overflowAsk = conflicts);
+		}
+		write(api('PATCH', taskUrl(), { overflowAllowed: on, version: v() }), on ? 'Overflow allowed.' : 'Overflow no longer allowed.');
+	}
+
+	function confirmOverflowOff() {
+		const acknowledge = overflowAsk!.map((c) => c.taskId);
+		overflowAsk = null;
+		write(api('PATCH', taskUrl(), { overflowAllowed: false, version: v(), acknowledge }), 'Overflow no longer allowed.');
 	}
 
 	// ── Assignee picker ──────────────────────────────────────────────────────
@@ -337,9 +356,19 @@
 					{/if}
 					{#if d.viewer.isCoord && d.series.enforceWindows && d.series.windowOverflowDays > 0}
 						<label class="check">
-							<input type="checkbox" checked={d.task.overflowAllowed} disabled={busy} onchange={toggleOverflow} />
+							<input type="checkbox" checked={d.task.overflowAllowed} disabled={busy || !!overflowAsk} onchange={toggleOverflow} />
 							Allow overflow <span class="hint">may run up to {d.series.windowOverflowDays} working days past its window</span>
 						</label>
+						{#if overflowAsk}
+							<div class="strict-ask" role="alertdialog" aria-label="Confirm turning overflow off">
+								<p><strong>Strict mode:</strong> turning overflow off re-plans the schedule and leaves {overflowAsk.length === 1 ? 'a task' : `${overflowAsk.length} tasks`} starting before {overflowAsk.length === 1 ? 'its' : 'their'} predecessors allow:</p>
+								<ul>{#each overflowAsk.slice(0, 4) as c (c.taskId)}<li>{c.message}</li>{/each}</ul>
+								<div class="row">
+									<button type="button" class="btn btn-ghost" onclick={() => (overflowAsk = null)}>Keep overflow</button>
+									<button type="button" class="btn btn-primary" disabled={busy} onclick={confirmOverflowOff}>Turn off anyway</button>
+								</div>
+							</div>
+						{/if}
 					{/if}
 				</section>
 
@@ -437,6 +466,9 @@
 	.grow { flex: 1; min-width: 0; }
 	.field.small { max-width: 150px; }
 	.check { display: flex; gap: var(--sp-2); align-items: center; font-size: 13px; flex-wrap: wrap; }
+	.strict-ask { border: 1px solid var(--tertiary); background: var(--tertiary-subtle); color: var(--tertiary-foreground); border-radius: var(--radius-sm); padding: var(--sp-3); font-size: 13px; display: flex; flex-direction: column; gap: var(--sp-2); }
+	.strict-ask p, .strict-ask ul { margin: 0; }
+	.strict-ask ul { padding-left: var(--sp-5); color: var(--danger); }
 	.facts { display: grid; grid-template-columns: auto 1fr; gap: 2px var(--sp-4); margin: 0; font-size: 13px; }
 	.facts dt { color: var(--muted-foreground); }
 	.facts dd { margin: 0; }

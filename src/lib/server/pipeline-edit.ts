@@ -13,6 +13,7 @@ import { loadSeriesContext } from './series-context.ts';
 import { refit, type RefitResult } from './refit.ts';
 import { refitChanges, refitReport, writeTaskChanges } from './schedule-write.ts';
 import type { DeadlineRule } from '../schedule/deadlines.ts';
+import { assertAcknowledged } from './strict.ts';
 
 type StageRow = typeof stages.$inferSelect;
 
@@ -34,7 +35,7 @@ export async function loadStage(id: string): Promise<StageRow> {
 	return row;
 }
 
-export async function editStage(opts: { stage: StageRow; edit: StageEdit; actorId: string; preview: boolean }) {
+export async function editStage(opts: { stage: StageRow; edit: StageEdit; actorId: string; preview: boolean; acknowledge?: string[] }) {
 	const { stage: before, edit, actorId } = opts;
 	const seriesId = before.seriesId;
 
@@ -98,6 +99,7 @@ export async function editStage(opts: { stage: StageRow; edit: StageEdit; actorI
 
 	const stageOut = { ...after, deadlineRule: after.deadlineRule };
 	if (opts.preview) return { preview: true as const, stage: stageOut, report, dueDates };
+	if (report) assertAcknowledged(report.strictConflicts, opts.acknowledge);
 	if (!Object.keys(changed).length) return { preview: false as const, stage: before, report: null, dueDates: [] };
 
 	const batchId = ulid();

@@ -9,6 +9,7 @@ import { parseOr400, updateSeriesSchema } from '#lib/server/validation.ts';
 import { loadSeriesContext } from '#lib/server/series-context.ts';
 import { refit } from '#lib/server/refit.ts';
 import { refitChanges, refitReport, taskChangeQueries } from '#lib/server/schedule-write.ts';
+import { assertAcknowledged } from '#lib/server/strict.ts';
 
 type SeriesRow = typeof series.$inferSelect;
 
@@ -17,7 +18,7 @@ type SeriesRow = typeof series.$inferSelect;
 // (spec: Changing windows); with `preview` the impact is returned without saving.
 export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	const { personId } = await requireCoord(locals, params.id);
-	const { preview, ...body } = parseOr400(updateSeriesSchema, await parseBody(request));
+	const { preview, acknowledge, ...body } = parseOr400(updateSeriesSchema, await parseBody(request));
 
 	const before = await db.select().from(series).where(eq(series.id, params.id)).then((r) => r[0]);
 	if (!before) throw error(404, 'Series not found');
@@ -51,9 +52,11 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	const result = ctx
 		? refit(ctx.taskMap, ctx.depList, { enforce: !!after.enforceWindows, windows: ctx.windows, overflowDays: after.windowOverflowDays })
 		: null;
-	const report = ctx && result ? refitReport(ctx, original!, result) : null;
+	// Judged under the settings being saved, strict mode included.
+	const report = ctx && result ? refitReport({ ...ctx, series: after }, original!, result) : null;
 
 	if (preview) return json({ preview: true, series: after, report });
+	if (report) assertAcknowledged(report.strictConflicts, acknowledge);
 	if (!Object.keys(changed).length) return json({ series: before, report: null });
 
 	const batchId = ulid();

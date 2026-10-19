@@ -8,15 +8,16 @@ import { changeWindows, loadWindow } from '#lib/server/window-change.ts';
 export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	const win = await loadWindow(params.id);
 	const { personId } = await requireCoord(locals, win.seriesId);
-	const { preview, ...fields } = parseOr400(updateWindowSchema, await parseBody(request));
-	return json(await changeWindows({ seriesId: win.seriesId, actorId: personId, op: { kind: 'update', id: win.id, fields }, preview: !!preview }));
+	const { preview, acknowledge, ...fields } = parseOr400(updateWindowSchema, await parseBody(request));
+	return json(await changeWindows({ seriesId: win.seriesId, actorId: personId, op: { kind: 'update', id: win.id, fields }, preview: !!preview, acknowledge }));
 };
 
 // DELETE /api/windows/:id — body or query `preview`. Started and done tasks keep their dates and lose the window.
 export const DELETE: RequestHandler = async ({ params, request, url, locals }) => {
 	const win = await loadWindow(params.id);
 	const { personId } = await requireCoord(locals, win.seriesId);
-	const body = (await request.json().catch(() => ({}))) as { preview?: boolean };
+	const body = (await request.json().catch(() => ({}))) as { preview?: boolean; acknowledge?: unknown };
 	const preview = body.preview === true || url.searchParams.get('preview') === 'true';
-	return json(await changeWindows({ seriesId: win.seriesId, actorId: personId, op: { kind: 'delete', id: win.id }, preview }));
+	const acknowledge = Array.isArray(body.acknowledge) ? body.acknowledge.filter((x): x is string => typeof x === 'string') : undefined;
+	return json(await changeWindows({ seriesId: win.seriesId, actorId: personId, op: { kind: 'delete', id: win.id }, preview, acknowledge }));
 };
