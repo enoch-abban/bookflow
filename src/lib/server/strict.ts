@@ -4,10 +4,9 @@
  * early, refuse it with 422 predecessor_conflict, naming the predecessors and any started
  * task that stopped the push.
  */
-import { json } from '@sveltejs/kit';
+import { error, json } from '@sveltejs/kit';
 import { strictConflicts, type Conflict, type Plan } from '#lib/schedule/strict.ts';
 import { shortDate } from '#lib/notifications/messages.ts';
-import type { SeriesContext } from './series-context.ts';
 
 const list = (names: string[]) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`);
 
@@ -19,11 +18,10 @@ export function describeConflict(c: Conflict, label: (id: string) => string): st
 		: `${label(c.taskId)} cannot start before ${shortDate(c.earliest)}, after ${preds}.`;
 }
 
-/**
- * The 422 response when a strict series' change would cause a conflict, or null to go ahead.
- * @param always the tasks the change moves on purpose: they may not end in conflict at all.
- */
-export function strictRefusal(ctx: Pick<SeriesContext, 'series' | 'labels'>, before: Plan, after: Plan, always: Iterable<string> = []): Response | null {
+type Ctx = { series: { strictMode: number }; labels: Map<string, string> };
+
+/** The refusal's body, or null when the change may go ahead. */
+function refusal(ctx: Ctx, before: Plan, after: Plan, always: Iterable<string>) {
 	if (!ctx.series.strictMode) return null;
 	const conflicts = strictConflicts(before, after, always);
 	if (!conflicts.length) return null;
@@ -31,7 +29,7 @@ export function strictRefusal(ctx: Pick<SeriesContext, 'series' | 'labels'>, bef
 	// A started task that stopped the push is the one to act on, so it leads.
 	const ordered = [...conflicts.filter((c) => c.frozen), ...conflicts.filter((c) => !c.frozen)];
 	const more = ordered.length > 1 ? ` ${ordered.length - 1} more ${ordered.length === 2 ? 'task is' : 'tasks are'} affected.` : '';
-	return json({
+	return {
 		error: 'predecessor_conflict',
 		message: `Strict mode: ${describeConflict(ordered[0], label)}${more}`,
 		taskIds: ordered.map((c) => c.taskId),
@@ -39,5 +37,20 @@ export function strictRefusal(ctx: Pick<SeriesContext, 'series' | 'labels'>, bef
 			taskId: c.taskId, label: label(c.taskId), earliest: c.earliest, days: c.days, started: c.frozen,
 			predecessors: c.predecessorIds.map((id) => ({ id, label: label(id), endDate: after.taskMap.get(id)?.endDate ?? null }))
 		}))
-	}, { status: 422 });
+	};
+}
+
+/**
+ * The 422 response when a strict series' change would cause a conflict, or null to go ahead.
+ * @param always the tasks the change moves on purpose: they may not end in conflict at all.
+ */
+export function strictRefusal(ctx: Ctx, before: Plan, after: Plan, always: Iterable<string> = []): Response | null {
+	const body = refusal(ctx, before, after, always);
+	return body ? json(body, { status: 422 }) : null;
+}
+
+/** The same check for changes made deeper down (pipeline edits, removals, redo): throws the 422. */
+export function assertStrict(ctx: Ctx, before: Plan, after: Plan, always: Iterable<string> = []): void {
+	const body = refusal(ctx, before, after, always);
+	if (body) throw error(422, body);
 }

@@ -69,3 +69,21 @@ export function projectedFinish(taskMap: Map<string, SchedTask>, finishTaskIds: 
 	}
 	return max;
 }
+
+/**
+ * A series' tasks and links as the strict-mode check reads them, through `q`: the database,
+ * or a transaction, to check a change's actual result before it commits (redo).
+ */
+export async function loadPlan(q: Pick<typeof db, 'select'>, seriesId: string) {
+	const rows = await q.select({ task: tasks, code: books.code }).from(tasks).innerJoin(books, eq(books.id, tasks.bookId)).where(eq(books.seriesId, seriesId));
+	const deps = await q.select({ predecessorId: dependencies.predecessorId, successorId: dependencies.successorId, lagDays: dependencies.lagDays })
+		.from(dependencies).innerJoin(tasks, eq(tasks.id, dependencies.successorId)).innerJoin(books, eq(books.id, tasks.bookId))
+		.where(eq(books.seriesId, seriesId));
+	const taskMap = new Map<string, SchedTask>(rows.map(({ task: t }) => [t.id, {
+		id: t.id, startDate: t.startDate, endDate: t.endDate, durationDays: t.durationDays, status: t.status,
+		statusBeforeBlock: t.statusBeforeBlock, windowId: t.windowId, scheduleState: t.scheduleState,
+		overflowAllowed: !!t.overflowAllowed, version: t.version,
+	}]));
+	return { taskMap, deps: deps as SchedDep[], labels: new Map(rows.map((r) => [r.task.id, `${r.task.title} · ${r.code}`])) };
+}
+

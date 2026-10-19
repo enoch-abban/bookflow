@@ -13,6 +13,7 @@ import { deriveEnd, toWorkingDay } from '../schedule/calendar.ts';
 import { buildPredMap, earliestStart, propagate, settle, type Placement, type SchedTask } from './scheduler.ts';
 import type { SeriesContext } from './series-context.ts';
 import { writeTaskChanges, type Tx } from './schedule-write.ts';
+import { assertStrict } from './strict.ts';
 import type { Log } from './removal.ts';
 
 type StageRow = typeof stages.$inferSelect;
@@ -120,6 +121,25 @@ export function planNewTasks(opts: {
 	const pushed = propagate(new Set(newTasks.map((t) => t.id)), ctx.taskMap, allDeps, ctx.rules);
 	for (const t of newTasks) pushed.delete(t.id);
 	return { newTasks, links, unlinked, pushed };
+}
+
+/**
+ * Strict mode for new tasks created with links: refused if the plan leaves any task starting
+ * before its predecessors allow, such as a push that reaches a started task.
+ * @param deps the dependencies the plan was made from
+ */
+export function assertPlanStrict(ctx: SeriesContext, original: Map<string, SchedTask>, deps: Dep[], plan: PlacementPlan, before: Dep[] = deps) {
+	assertStrict(
+		{ series: ctx.series, labels: planLabels(ctx, plan) },
+		{ taskMap: original, deps: before },
+		{ taskMap: ctx.taskMap, deps: [...deps.filter((d) => !plan.unlinked.includes(d)), ...plan.links] }
+	);
+}
+
+/** Task names for messages, the plan's new tasks included ("InDesign · G9"). */
+function planLabels(ctx: SeriesContext, plan: PlacementPlan) {
+	const code = new Map(ctx.booksData.map((b) => [b.id, b.code]));
+	return new Map([...ctx.labels, ...plan.newTasks.map((t) => [t.id, `${t.title} · ${code.get(t.bookId) ?? ''}`] as const)]);
 }
 
 /** Save a plan: new tasks, relinked dependencies and pushed successors, all logged for undo. */

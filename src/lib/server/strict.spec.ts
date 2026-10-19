@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { deriveEnd, type SchedDep, type SchedTask } from '#lib/schedule/scheduler.ts';
-import { strictRefusal } from './strict.ts';
+import { assertStrict, strictRefusal } from './strict.ts';
 
 const task = (id: string, start: string, dur: number, extra: Partial<SchedTask> = {}): SchedTask => ({
 	id, startDate: start, endDate: deriveEnd(start, dur), durationDays: dur, status: 'not_started',
@@ -32,5 +32,19 @@ describe('strictRefusal', () => {
 		const body = await strictRefusal(ctx(1), { ...before, taskMap: new Map([...before.taskMap].map(([k, v]) => [k, k === 'B' ? { ...v, status: 'in_progress', startDate: '2026-10-13', endDate: '2026-10-13' } : v])), deps: [] }, started)!.json();
 		expect(body.message).toContain('InDesign · G9 has started, so it cannot be pushed');
 		expect(body.conflicts[0].started).toBe(true);
+	});
+});
+
+describe('assertStrict', () => {
+	it('throws a 422 carrying the same body as the response', () => {
+		let thrown: { status?: number; body?: { error?: string; taskIds?: string[] } } | undefined;
+		try { assertStrict(ctx(1), before, earlyB, ['B']); } catch (e) { thrown = e as typeof thrown; }
+		expect(thrown?.status).toBe(422);
+		expect(thrown?.body).toMatchObject({ error: 'predecessor_conflict', taskIds: ['B'] });
+	});
+
+	it('does nothing when strict mode is off or nothing conflicts', () => {
+		expect(() => assertStrict(ctx(0), before, earlyB, ['B'])).not.toThrow();
+		expect(() => assertStrict(ctx(1), before, before, ['B'])).not.toThrow();
 	});
 });

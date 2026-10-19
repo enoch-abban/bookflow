@@ -105,7 +105,11 @@ const ORDER_DELETE = ['dependency', 'stage_link', 'skip', 'task', 'book', 'stage
  * Reverse an undo or redo batch as `action` ('redo' reverses an undo; 'undo' reverses a redo).
  * Returns the new batch id, or the conflicts that stopped it.
  */
-export async function reverseStep(opts: { sourceBatchId: string; entries: Row[]; actorId: string; action: 'undo' | 'redo' }) {
+export async function reverseStep(opts: {
+	sourceBatchId: string; entries: Row[]; actorId: string; action: 'undo' | 'redo';
+	/** Runs inside the transaction once everything is written; throwing rolls it all back. */
+	check?: (tx: Tx) => Promise<void>;
+}) {
 	const ops: Op[] = opts.entries.map((e) => ({
 		entry: e, entity: e.entity, id: e.entityId,
 		before: e.beforeJson ? JSON.parse(e.beforeJson) : null, after: e.afterJson ? JSON.parse(e.afterJson) : null,
@@ -308,6 +312,8 @@ export async function reverseStep(opts: { sourceBatchId: string; entries: Row[];
 			const rows = await tx.select({ id: windows.id }).from(windows).where(eq(windows.seriesId, seriesId)).orderBy(windows.startDate);
 			for (const [i, r] of rows.entries()) await tx.update(windows).set({ sortOrder: i + 1 }).where(eq(windows.id, r.id));
 		}
+
+		if (opts.check) await opts.check(tx);
 	});
 
 	if (ops.some((o) => o.entity === 'holiday')) forgetHolidays();

@@ -10,7 +10,9 @@ declare global {
 	namespace App {
 		interface Locals { user?: User; session?: Session }
 
-		// interface Error {}
+		// Errors may carry a machine-readable code and details, e.g. strict mode's
+		// predecessor_conflict with the tasks it names.
+		interface Error { message: string; error?: string; taskIds?: string[]; conflicts?: unknown[] }
 		// interface PageData {}
 		// interface PageState {}
 		// interface Platform {}

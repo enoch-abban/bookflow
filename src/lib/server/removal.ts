@@ -18,6 +18,7 @@ import { writeTaskChanges, type Tx } from './schedule-write.ts';
 import { planRelink } from '../schedule/relink.ts';
 import { loadSeriesContext, type SeriesContext } from './series-context.ts';
 import { pushChanges, rejoin, type PropResult, type SchedTask } from './scheduler.ts';
+import { assertStrict } from './strict.ts';
 
 type Dep = typeof dependencies.$inferSelect;
 type TaskRow = typeof tasks.$inferSelect;
@@ -74,11 +75,15 @@ export async function deleteTasks(tx: Tx, log: Log, doomed: TaskRow[], touching:
  * series' schedule with the doomed tasks gone. `ctx` is that schedule afterwards, so a
  * caller that adds tasks next (a track change) places them after the push.
  */
-export async function planRejoin(seriesId: string, doomedIds: Set<string>, bridges: Dep[], loaded?: SeriesContext) {
+export async function planRejoin(seriesId: string, doomedIds: Set<string>, bridges: Dep[], loaded?: SeriesContext, opts: { strict?: boolean } = {}) {
 	const ctx = loaded ?? (await loadSeriesContext(seriesId));
 	const original = new Map([...ctx.taskMap].map(([k, v]) => [k, { ...v }]));
-	const { pushed } = rejoin(doomedIds, bridges, ctx.taskMap, ctx.depList, ctx.rules);
+	const before = ctx.depList;
+	const { pushed, deps } = rejoin(doomedIds, bridges, ctx.taskMap, ctx.depList, ctx.rules);
 	ctx.tasksData = ctx.tasksData.filter((t) => !doomedIds.has(t.id));
+	// Strict mode: refused, in the preview too, if the push would reach a started task. A
+	// caller that adds tasks afterwards (a track change) checks its whole plan instead.
+	if (opts.strict !== false) assertStrict(ctx, { taskMap: original, deps: before }, { taskMap: ctx.taskMap, deps });
 	return { ctx, original, pushed };
 }
 

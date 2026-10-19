@@ -15,7 +15,7 @@ import { planRelink } from '../schedule/relink.ts';
 import { loadSeriesContext } from './series-context.ts';
 import { seriesPattern } from './pipeline-structure.ts';
 import { deleteTasks, isStarted, logger, planRejoin } from './removal.ts';
-import { describePlan, planNewTasks, writePlan } from './stage-tasks.ts';
+import { assertPlanStrict, describePlan, planNewTasks, writePlan } from './stage-tasks.ts';
 
 type StageRow = typeof stages.$inferSelect;
 type Dep = typeof dependencies.$inferSelect;
@@ -117,10 +117,12 @@ export async function addStage(opts: { seriesId: string; actorId: string; input:
 
 	const ctx = await loadSeriesContext(seriesId);
 	const original = new Map([...ctx.taskMap].map(([k, v]) => [k, { ...v }]));
+	const deps = await seriesDeps(seriesId);
 	const plan = planNewTasks({
-		ctx, deps: await seriesDeps(seriesId), pattern, today: opts.today,
+		ctx, deps, pattern, today: opts.today,
 		gains: bookList.filter((b) => b.included).map((b) => ({ bookId: b.id, stages: [stage] })),
 	});
+	assertPlanStrict(ctx, original, deps, plan);
 	const stageName = new Map([...live.map((s) => [s.id, s.name] as const), [stageId, stage.name]]);
 	const report = {
 		stage: { name: stage.name, key: stage.key },
@@ -200,7 +202,7 @@ export async function changeTrack(opts: { bookId: string; trackId: string; actor
 	const { touching, bridges } = planRelink(doomedIds, deps, ulid);
 	// The removed stages first, rejoined and pushed (spec: Rejoining after removal); the new
 	// stages are then placed after that.
-	const { ctx, original, pushed: rejoinPushed } = await planRejoin(book.seriesId, doomedIds, bridges);
+	const { ctx, original, pushed: rejoinPushed } = await planRejoin(book.seriesId, doomedIds, bridges, undefined, { strict: false });
 	const afterRemoval = [...deps.filter((d) => !touching.includes(d)), ...bridges];
 	const plan = planNewTasks({
 		ctx, deps: afterRemoval, pattern: await seriesPattern(book.seriesId), today: opts.today,
@@ -208,6 +210,8 @@ export async function changeTrack(opts: { bookId: string; trackId: string; actor
 	});
 	// One write per task: where both pushed it, the later placement (the new stages') wins.
 	plan.pushed = new Map([...rejoinPushed, ...plan.pushed]);
+	// Strict mode, on the whole change: the series' links before, the plan's links after.
+	assertPlanStrict(ctx, original, afterRemoval, plan, deps);
 
 	const allStages = await db.select({ id: stages.id, name: stages.name }).from(stages).where(eq(stages.seriesId, book.seriesId));
 	const stageName = new Map(allStages.map((s) => [s.id, s.name]));

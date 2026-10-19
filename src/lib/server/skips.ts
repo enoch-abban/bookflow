@@ -10,7 +10,7 @@ import { db } from '#lib/server/db/index.ts';
 import { activityLog, bookStageSkips, books, dependencies, stageTracks, stages, tasks } from '#lib/server/db/schema.ts';
 import { planRelink } from '../schedule/relink.ts';
 import { loadSeriesContext } from './series-context.ts';
-import { planNewTasks, writePlan } from './stage-tasks.ts';
+import { assertPlanStrict, planNewTasks, writePlan } from './stage-tasks.ts';
 import { seriesPattern } from './pipeline-structure.ts';
 import { deleteTasks, isStarted, logger, planRejoin, pushedReport, writeRejoin } from './removal.ts';
 
@@ -82,6 +82,7 @@ export async function liftSkip(opts: { bookId: string; stageId: string; actorId:
 		? await db.select().from(dependencies).where(inArray(dependencies.successorId, [...ctx.taskMap.keys()]))
 		: [];
 	const plan = planNewTasks({ ctx, deps, gains: [{ bookId: book.id, stages: [stage] }], pattern: await seriesPattern(book.seriesId), today: opts.today });
+	assertPlanStrict(ctx, original, deps, plan);
 	const task = plan.newTasks[0];
 	const winLabel = new Map(ctx.windows.map((w) => [w.id, w.label]));
 	const report = {

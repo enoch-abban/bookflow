@@ -14,6 +14,7 @@ import { bookLinks, type StageLink } from '../schedule/pattern.ts';
 import { deriveEnd, nextWorkingDay, toWorkingDay } from '../schedule/calendar.ts';
 import { buildPredMap, earliestStart, settle, type SchedTask, type WindowRules } from './scheduler.ts';
 import { refreshHolidays } from './calendar-db.ts';
+import { assertStrict } from './strict.ts';
 
 type StageRow = typeof stages.$inferSelect;
 
@@ -123,6 +124,18 @@ export async function addBook(opts: { seriesId: string; actorId: string; input: 
 	const taskOfStage = new Map(newTasks.map((t) => [t.stageId, t.id!]));
 	const depRows = bookLinks(new Set(taskOfStage.keys()), pattern)
 		.map((l) => ({ id: ulid(), predecessorId: taskOfStage.get(l.from)!, successorId: taskOfStage.get(l.to)!, lagDays: l.lagDays }));
+
+	// Strict mode: the book's tasks link only to each other and are new, so the check looks
+	// at them alone. A schedule copied from another book could copy a conflict with it.
+	const asSched = (t: NewTask): SchedTask => ({
+		id: t.id!, startDate: t.startDate, endDate: t.endDate, durationDays: t.durationDays, status: 'not_started',
+		windowId: t.windowId ?? null, scheduleState: t.scheduleState, version: 1,
+	});
+	assertStrict(
+		{ series: ser, labels: new Map(newTasks.map((t) => [t.id!, `${t.title} · ${input.code}`])) },
+		{ taskMap: new Map(), deps: [] },
+		{ taskMap: new Map(newTasks.map((t) => [t.id!, asSched(t)])), deps: depRows }
+	);
 
 	const sortOrder = (maxSort[0]?.m ?? 0) + 1;
 	const book = {
