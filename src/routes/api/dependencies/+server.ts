@@ -8,6 +8,7 @@ import { inArray } from 'drizzle-orm';
 import { requireCoord, parseBody } from '#lib/server/api-auth.ts';
 import { propagate } from '#lib/server/scheduler.ts';
 import { loadSeriesContext } from '#lib/server/series-context.ts';
+import { strictRefusal } from '#lib/server/strict.ts';
 
 type Body = { predecessorId: string; successorId: string; lagDays?: number };
 
@@ -65,6 +66,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const original = new Map([...ctx.taskMap].map(([k, v]) => [k, { ...v }]));
 	const allDeps = [...depList, { predecessorId: body.predecessorId, successorId: body.successorId, lagDays: lag }];
 	const pushed = propagate(new Set([body.predecessorId]), ctx.taskMap, allDeps, ctx.rules);
+	// Strict mode: the link pushes a not-started successor, but a started one cannot move.
+	const refused = strictRefusal(ctx, { taskMap: original, deps: depList }, { taskMap: ctx.taskMap, deps: allDeps });
+	if (refused) return refused;
 	const batchId = ulid();
 
 	// One round trip: the link, its log entry and every task it pushed.

@@ -6,6 +6,8 @@
 	import { latestEnd, sortWindows, windowAt } from '#lib/schedule/windows.ts';
 	import { setHolidays } from '#lib/schedule/calendar.ts';
 	import { criticalPath } from '#lib/schedule/critical.ts';
+	import type { SchedTask } from '#lib/schedule/scheduler.ts';
+	import { tryMove, type Plan } from '#lib/schedule/strict.ts';
 	import { statusLabel } from '#lib/status.ts';
 	import { swimlaneSize, swimlaneSvg, type SwimlaneModel } from '#lib/export/swimlane-svg.ts';
 	import { canvasMeasure, download, pdfBlob, pngBlob, svgToCanvas } from '#lib/export/raster.ts';
@@ -584,6 +586,7 @@
 			offsetX: cx - barLeft(task)
 		};
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		startStrict(task.id);
 	}
 
 	function onPointerMove(e: PointerEvent) {
@@ -613,15 +616,60 @@
 		if (sIdx < 0) return;
 		const eIdx = sIdx + drag.durationDays - 1;
 		if (eIdx >= workingDays.length) return;
-		const newStart = workingDays[sIdx].date;
-		const newEnd = workingDays[eIdx].date;
 		const t = localTasks.find((x) => x.id === drag!.taskId);
-		// The bar moves within its window, or into another one, but cannot straddle an
-		// edge beyond its overflow allowance: positions that don't fit are skipped.
-		if (!t || !fits(t, newStart, newEnd)) return;
+		if (!t) return;
+		// The bar moves within its window, or into another one, but cannot straddle an edge
+		// beyond its overflow allowance; in strict mode it also cannot go where the server
+		// would refuse. Past a position it cannot take, it stops at the nearest one it can,
+		// stepping back towards where it is.
+		const dur = drag.durationDays;
+		const allowed = (i: number) => {
+			const s = workingDays[i]?.date;
+			const e = workingDays[i + dur - 1]?.date;
+			return !!s && !!e && fits(t, s, e) && strictAllows(t.id, s, e, dur);
+		};
+		const here = workingDays.findIndex((d) => d.date === t.startDate);
+		let i = sIdx;
+		if (here >= 0) while (i !== here && !allowed(i)) i += i < here ? 1 : -1;
+		if (i === here || !allowed(i)) return;
+		const newStart = workingDays[i].date;
+		const newEnd = workingDays[i + dur - 1].date;
 		localTasks = localTasks.map((x) =>
 			x.id === drag!.taskId ? { ...x, startDate: newStart, endDate: newEnd } : x
 		);
+	}
+
+	// ── Strict mode while dragging (spec: Swimlane editor) ───────────────────
+	// The bar stops where the server would refuse: before its predecessors allow, or where
+	// its push would reach a started task. Each position is tried on a copy of the plan as
+	// it was when the bar was picked up, with the server's propagation and check.
+
+	let strictBase: { taskId: string; plan: Plan; tried: Map<string, boolean> } | null = null;
+
+	function asSched(t: Task): SchedTask {
+		return {
+			id: t.id, startDate: t.startDate, endDate: t.endDate, durationDays: t.durationDays, status: t.status,
+			statusBeforeBlock: t.statusBeforeBlock, windowId: t.windowId, scheduleState: t.scheduleState,
+			overflowAllowed: !!t.overflowAllowed, ignoresWindows: !!stageMap.get(t.stageId)?.ignoresWindows, version: t.version
+		};
+	}
+
+	/** Snapshot the plan when a bar is picked up (strict series only). */
+	function startStrict(taskId: string) {
+		strictBase = series.strictMode
+			? { taskId, plan: { taskMap: new Map(localTasks.map((t) => [t.id, asSched(t)])), deps }, tried: new Map() }
+			: null;
+	}
+
+	function strictAllows(taskId: string, start: string, end: string, durationDays: number): boolean {
+		if (!strictBase || strictBase.taskId !== taskId) return true;
+		const key = `${start}|${end}`;
+		const known = strictBase.tried.get(key);
+		if (known !== undefined) return known;
+		const rules = { enforce: !!series.enforceWindows, windows: sortedWins, overflowDays: series.windowOverflowDays };
+		const ok = tryMove(strictBase.plan, taskId, { startDate: start, endDate: end, durationDays }, rules).length === 0;
+		strictBase.tried.set(key, ok);
+		return ok;
 	}
 
 	type Orig = { startDate: string; endDate: string; durationDays: number };
@@ -760,6 +808,7 @@
 		e.stopPropagation();
 		e.preventDefault();
 		resizing = { taskId: task.id, edge, origStart: task.startDate, origEnd: task.endDate, origDuration: task.durationDays };
+		startStrict(task.id);
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 	}
 
@@ -780,6 +829,7 @@
 					workingDays.findIndex((d) => d.date === t.endDate) -
 					workingDays.findIndex((d) => d.date === snapped) +
 					1;
+				if (!strictAllows(t.id, snapped, t.endDate, Math.max(1, dur))) return t;
 				return { ...t, startDate: snapped, durationDays: Math.max(1, dur) };
 			} else {
 				if (snapped < t.startDate || !fits(t, t.startDate, snapped, mayOverflow)) return t;
@@ -787,6 +837,7 @@
 					workingDays.findIndex((d) => d.date === snapped) -
 					workingDays.findIndex((d) => d.date === t.startDate) +
 					1;
+				if (!strictAllows(t.id, t.startDate, snapped, Math.max(1, dur))) return t;
 				return { ...t, endDate: snapped, durationDays: Math.max(1, dur) };
 			}
 		});
@@ -1033,7 +1084,7 @@
 				</div>
 			</details>
 			{#if series.strictMode}
-				<span class="badge-strict">Strict</span>
+				<span class="badge-strict" title="Strict mode: changes that would start a task before its predecessors allow, or push a started task, are refused">Strict</span>
 			{/if}
 		</div>
 	</div>

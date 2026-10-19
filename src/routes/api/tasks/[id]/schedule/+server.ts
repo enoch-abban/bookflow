@@ -6,6 +6,7 @@ import { requireCoord, parseBody, versionConflict, loadTaskWithSeries } from '#l
 import { checkExplicitMove, deriveEnd, propagate } from '#lib/server/scheduler.ts';
 import { loadSeriesContext, projectedFinish } from '#lib/server/series-context.ts';
 import { taskChangeQueries, type TaskChange } from '#lib/server/schedule-write.ts';
+import { strictRefusal } from '#lib/server/strict.ts';
 
 type Body = {
 	start: string;
@@ -37,6 +38,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	ctx.taskMap.set(id, { ...moved, windowId: check.windowId, scheduleState: 'scheduled' });
 
 	const pushed = propagate(new Set([id]), ctx.taskMap, ctx.depList, ctx.rules);
+	const refused = strictRefusal(ctx, { taskMap: original, deps: ctx.depList }, { taskMap: ctx.taskMap, deps: ctx.depList }, [id]);
+	if (refused) return refused;
 
 	const changes: TaskChange[] = [
 		{

@@ -8,6 +8,7 @@ import { requireCoord, parseBody } from '#lib/server/api-auth.ts';
 import { checkExplicitMove, deriveEnd, propagate } from '#lib/server/scheduler.ts';
 import { loadSeriesContext, projectedFinish } from '#lib/server/series-context.ts';
 import { writeTaskChanges, type TaskChange } from '#lib/server/schedule-write.ts';
+import { strictRefusal } from '#lib/server/strict.ts';
 
 type Move = {
 	id: string;
@@ -78,6 +79,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	// One propagation pass from all moved tasks
 	const pushed = propagate(new Set(taskIds), ctx.taskMap, ctx.depList, ctx.rules);
+	// Strict mode: like the window checks, one failing move refuses the whole request.
+	const refused = strictRefusal(ctx, { taskMap: original, deps: ctx.depList }, { taskMap: ctx.taskMap, deps: ctx.depList }, taskIds);
+	if (refused) return refused;
 	for (const [tid, p] of pushed) {
 		if (taskIds.includes(tid)) continue;
 		changes.push({ id: tid, ...p, windowId: p.windowId ?? null, action: p.scheduleState === 'unscheduled' ? 'unschedule' : 'move' });
